@@ -235,7 +235,11 @@ def generate_narrative(ticker: str, info: dict, score_result: dict) -> str | Non
 def fetch_stock_data(ticker: str) -> dict | None:
     """Fetch yfinance info for a ticker. Returns None on failure."""
     try:
-        stock = yf.Ticker(ticker)
+        session = requests.Session()
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        })
+        stock = yf.Ticker(ticker, session=session)
         info = stock.info
         if not info or info.get("regularMarketPrice") is None and info.get("currentPrice") is None:
             return None
@@ -351,7 +355,7 @@ def run_scan():
             failed += 1
 
         # Respectful rate limiting - gives Ollama time to breathe too
-        time.sleep(1.0)
+        time.sleep(3.0)
 
     conn.execute("""
         INSERT INTO scan_log (scan_date, started_at, completed_at, stocks_scanned, stocks_failed)
