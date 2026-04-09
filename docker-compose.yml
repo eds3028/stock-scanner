@@ -1,0 +1,26 @@
+version: "3.8"
+
+services:
+  stocks:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: stocks-scanner
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    volumes:
+      - /opt/stacks/stocks/data:/data
+    environment:
+      - TZ=Australia/Perth
+      # Set this to your Ollama container's IP or hostname
+      # Find it in Portainer under your Ollama container's network settings
+      # Example: http://192.168.1.50:11434
+      - OLLAMA_HOST=http://192.168.107.54:11434
+      - OLLAMA_MODEL=llama3.1:8b
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
