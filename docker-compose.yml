@@ -3,7 +3,7 @@ version: "3.8"
 services:
   stocks:
     build:
-      context: .
+      context: ./app
       dockerfile: Dockerfile
     container_name: stocks-scanner
     restart: unless-stopped
