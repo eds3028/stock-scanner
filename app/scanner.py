@@ -207,8 +207,7 @@ def generate_narrative(ticker: str, info: dict, score_result: dict) -> str | Non
             f"{OLLAMA_HOST}/api/generate",
             json={
                 "model": OLLAMA_MODEL,
-                "prompt": prompt,
-                "stream": False,
+< truncated lines 210-211 >
                 "options": {
                     "temperature": 0.4,
                     "num_predict": 400,
@@ -232,21 +231,70 @@ def generate_narrative(ticker: str, info: dict, score_result: dict) -> str | Non
         return None
 
 
-def fetch_stock_data(ticker: str) -> dict | None:
-    """Fetch yfinance info for a ticker. Returns None on failure."""
+def get_yahoo_session() -> requests.Session:
+    """Create a session with valid Yahoo Finance cookies and crumb."""
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+    })
     try:
-        session = requests.Session()
-        session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        })
-        stock = yf.Ticker(ticker, session=session)
-        info = stock.info
-        if not info or info.get("regularMarketPrice") is None and info.get("currentPrice") is None:
-            return None
-        return info
+        # Visit Yahoo Finance homepage first to get cookies
+        session.get("https://finance.yahoo.com", timeout=10)
+        time.sleep(2)
+        # Get a crumb
+        crumb_response = session.get(
+            "https://query1.finance.yahoo.com/v1/test/csrfToken",
+            timeout=10
+        )
+        time.sleep(1)
     except Exception as e:
-        log.warning(f"Failed to fetch {ticker}: {e}")
-        return None
+        log.warning(f"Session setup warning: {e}")
+    return session
+
+
+_yahoo_session = None
+_session_created_at = None
+
+
+def fetch_stock_data(ticker: str) -> dict | None:
+    """Fetch yfinance info for a ticker with shared session and retry logic."""
+    global _yahoo_session, _session_created_at
+
+    # Refresh session every 50 stocks or if not created yet
+    if _yahoo_session is None or _session_created_at is None:
+        log.info("Creating new Yahoo Finance session...")
+        _yahoo_session = get_yahoo_session()
+        _session_created_at = time.time()
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            stock = yf.Ticker(ticker, session=_yahoo_session)
+            info = stock.info
+            if not info or (info.get("regularMarketPrice") is None and info.get("currentPrice") is None):
+                return None
+            return info
+        except Exception as e:
+            error_str = str(e)
+            if "429" in error_str or "Too Many Requests" in error_str:
+                wait = 30 * (attempt + 1)
+                log.warning(f"Rate limited on {ticker}, waiting {wait}s (attempt {attempt+1}/{max_retries})")
+                time.sleep(wait)
+                # Refresh session after rate limit
+                log.info("Refreshing Yahoo Finance session after rate limit...")
+                _yahoo_session = get_yahoo_session()
+                _session_created_at = time.time()
+            else:
+                log.warning(f"Failed to fetch {ticker}: {e}")
+                return None
+
+    log.warning(f"All retries exhausted for {ticker}")
+    return None
 
 
 def store_score(conn, ticker: str, info: dict, score_result: dict, scan_date: str, narrative: str = None):
