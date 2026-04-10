@@ -176,7 +176,6 @@ class DataOrchestrator:
             CREATE INDEX IF NOT EXISTS idx_scores_ticker ON scores(ticker);
             CREATE INDEX IF NOT EXISTS idx_scores_date ON scores(scan_date);
             CREATE INDEX IF NOT EXISTS idx_scores_total ON scores(total_score);
-            CREATE INDEX IF NOT EXISTS idx_scores_version ON scores(scoring_model_version);
             CREATE INDEX IF NOT EXISTS idx_ticker_metrics_run ON ticker_metrics(run_id);
             CREATE INDEX IF NOT EXISTS idx_ticker_metrics_date ON ticker_metrics(scan_date);
             CREATE INDEX IF NOT EXISTS idx_watchlist_items_ticker ON watchlist_items(ticker);
@@ -215,6 +214,19 @@ class DataOrchestrator:
 
         try:
             conn.execute("ALTER TABLE holdings ADD COLUMN acquired_at TEXT")
+        except Exception:
+            pass
+
+        # Create version index only when column exists (older DBs may not have it yet).
+        try:
+            score_cols = {
+                r["name"]
+                for r in conn.execute("PRAGMA table_info(scores)").fetchall()
+            }
+            if "scoring_model_version" in score_cols:
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_scores_version ON scores(scoring_model_version)"
+                )
         except Exception:
             pass
 
