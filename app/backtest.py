@@ -37,11 +37,15 @@ def _max_drawdown(equity: pd.Series) -> float:
     return float(dd.min())
 
 
+def _scores_has_column(conn: sqlite3.Connection, column: str) -> bool:
+    rows = conn.execute("PRAGMA table_info(scores)").fetchall()
+    return any(r[1] == column for r in rows)
+
+
 def available_versions(conn: sqlite3.Connection) -> list[str]:
-    rows = conn.execute(
-        "SELECT DISTINCT COALESCE(scoring_model_version, ?) as v FROM scores ORDER BY v",
-        (DEFAULT_VERSION,),
-    ).fetchall()
+    if not _scores_has_column(conn, "scoring_model_version"):
+        return [DEFAULT_VERSION]
+    rows = conn.execute("SELECT DISTINCT scoring_model_version as v FROM scores ORDER BY v").fetchall()
     versions = [r[0] for r in rows if r[0]]
     return versions or [DEFAULT_VERSION]
 
@@ -53,16 +57,19 @@ def run_backtest(
     transaction_cost_bps: float = 10.0,
     top_n: Optional[int] = None,
 ) -> BacktestResult:
+    has_model_version = _scores_has_column(conn, "scoring_model_version")
+    version_filter = "COALESCE(scoring_model_version, ?) = ?" if has_model_version else "? = ?"
+    query_params = (DEFAULT_VERSION, scoring_model_version) if has_model_version else (DEFAULT_VERSION, scoring_model_version)
     df = pd.read_sql_query(
-        """
+        f"""
         SELECT scan_date, ticker, total_score, current_price
         FROM scores
-        WHERE COALESCE(scoring_model_version, ?) = ?
+        WHERE {version_filter}
           AND current_price IS NOT NULL
           AND current_price > 0
         """,
         conn,
-        params=(DEFAULT_VERSION, scoring_model_version),
+        params=query_params,
     )
     if df.empty:
         return BacktestResult(
@@ -219,17 +226,20 @@ def forward_bucket_analysis(
     bucket_count: int = 10,
     horizons: tuple[int, ...] = (1, 3, 6, 12),
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    has_model_version = _scores_has_column(conn, "scoring_model_version")
+    version_filter = "COALESCE(scoring_model_version, ?) = ?" if has_model_version else "? = ?"
+    query_params = (DEFAULT_VERSION, scoring_model_version) if has_model_version else (DEFAULT_VERSION, scoring_model_version)
     raw = pd.read_sql_query(
-        """
+        f"""
         SELECT scan_date, ticker, total_score, value_score, future_score, past_score, health_score, dividend_score, current_price
         FROM scores
-        WHERE COALESCE(scoring_model_version, ?) = ?
+        WHERE {version_filter}
           AND current_price IS NOT NULL
           AND current_price > 0
         ORDER BY scan_date
         """,
         conn,
-        params=(DEFAULT_VERSION, scoring_model_version),
+        params=query_params,
     )
     if raw.empty:
         return pd.DataFrame(), pd.DataFrame()
