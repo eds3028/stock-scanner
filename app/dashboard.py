@@ -22,7 +22,11 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-:root {
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500;700&family=DM+Sans:wght@300;400;500;600;700&display=swap');
+
+/* Force dark mode universally */
+:root, [data-theme], .stApp, .main, section[data-testid="stSidebar"] {
+  color-scheme: dark !important;
   --bg: #070d1f;
   --panel: #0c1324;
   --panel-2: #121a30;
@@ -37,21 +41,42 @@ st.markdown("""
   --amber: #ffaa00;
   --red: #ff4d6a;
 }
-html, body, [class*="css"] { font-family: system-ui, -apple-system, sans-serif !important; font-size: 14px; }
+
+/* Dark backgrounds everywhere */
+.stApp { background-color: #070d1f !important; }
+.main .block-container { background-color: #070d1f !important; }
+section[data-testid="stSidebar"] { background-color: #0c1324 !important; border-right: 1px solid #1e2d4a !important; }
+
+/* Force all text to be light */
+.stApp, .stApp p, .stApp span, .stApp div, .stApp label {
+  color: #e8edf5 !important;
+}
+
+html, body, [class*="css"] { font-family: 'DM Sans', sans-serif !important; font-size: 14px; }
 .block-container { padding-top: 1.0rem; padding-bottom: 2rem; max-width: 1580px; }
+
 div[data-testid="stMetric"] {
   background: linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0.01));
   border: 1px solid var(--border-soft); border-radius: 14px; padding: 10px 12px;
 }
-div[data-testid="stMetricValue"] { font-family: 'Courier New', monospace; font-size: 1.12rem !important; }
-div[data-testid="stMetricLabel"] { font-size: 0.72rem; color: var(--muted); }
+div[data-testid="stMetricValue"] { font-family: 'DM Mono', monospace !important; font-size: 1.12rem !important; color: #e8edf5 !important; }
+div[data-testid="stMetricLabel"] { font-size: 0.72rem; color: #7a90b5 !important; }
+
 hr { border-color: #1e2d4a !important; margin: 8px 0 !important; }
-.stTabs [data-baseweb="tab-list"] { border-bottom: 1px solid #1e2d4a; gap: 0; background: transparent; }
+
+/* Tabs - larger touch targets for iPad */
+.stTabs [data-baseweb="tab-list"] { border-bottom: 1px solid #1e2d4a; gap: 0; background: #0c1324 !important; border-radius: 12px 12px 0 0; padding: 4px 4px 0; }
 .stTabs [data-baseweb="tab"] {
-  color: #7a90b5; font-size: 0.84rem; font-weight: 600;
-  padding: 10px 22px; border-radius: 0; border-bottom: 2px solid transparent; background: transparent;
+  color: #7a90b5 !important; font-size: 0.9rem !important; font-weight: 600 !important;
+  padding: 14px 28px !important; border-radius: 8px 8px 0 0 !important;
+  border-bottom: 3px solid transparent !important; background: transparent !important;
+  min-width: 120px !important; text-align: center !important;
 }
-.stTabs [aria-selected="true"] { color: #3b7dff !important; border-bottom-color: #3b7dff !important; background: transparent !important; }
+.stTabs [aria-selected="true"] { color: #3b7dff !important; border-bottom-color: #3b7dff !important; background: rgba(59,125,255,0.08) !important; }
+.stTabs [data-baseweb="tab"]:hover { color: #b8d0ff !important; background: rgba(255,255,255,0.04) !important; }
+
+/* Tab content panels */
+.stTabs [data-baseweb="tab-panel"] { padding-top: 1.2rem !important; }
 .section-label {
   font-size: 0.65rem; font-weight: 700; letter-spacing: 0.12em;
   text-transform: uppercase; color: #4a5d7a; margin-bottom: 6px;
@@ -110,6 +135,18 @@ div[data-testid="column"] div[data-testid="stButton"] > button:hover {
   background: linear-gradient(180deg,#152142,#101930) !important; color: #fff !important; border-color: #28406a !important;
 }
 .fin-card { background: linear-gradient(180deg,#10182d 0%,#0c1324 100%); border: 1px solid #1e2d4a; border-radius: 14px; padding: 16px 18px; margin-bottom: 8px; }
+
+/* Panel - carries card theme through rest of UI */
+.panel {
+  background: radial-gradient(circle at top left,rgba(59,125,255,0.06),transparent 40%),
+              linear-gradient(180deg,#121a30 0%,#0c1324 100%);
+  border: 1px solid rgba(84,105,150,0.22); border-radius: 16px;
+  padding: 20px 22px; margin-bottom: 16px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.2),inset 0 1px 0 rgba(255,255,255,0.03);
+}
+.panel-title { font-size: 1.05rem; font-weight: 700; color: #f4f7fb; margin-bottom: 12px; }
+.panel-subtitle { font-size: 0.78rem; color: #7a90b5; margin-bottom: 16px; }
+
 .explain-box {
   background: linear-gradient(180deg,rgba(59,125,255,0.07),rgba(59,125,255,0.02));
   border: 1px solid rgba(59,125,255,0.15); border-radius: 10px;
@@ -117,7 +154,34 @@ div[data-testid="column"] div[data-testid="stButton"] > button:hover {
   color: #9db0cf; line-height: 1.6;
 }
 .explain-title { color: #b8d0ff; font-weight: 600; font-size: 0.78rem; margin-bottom: 4px; }
-[data-testid="stDataFrame"] { border: 1px solid rgba(255,255,255,0.06); border-radius: 14px; overflow: hidden; }
+
+/* Expanders */
+details { background: linear-gradient(180deg,#10182d,#0c1324) !important; border: 1px solid #1e2d4a !important; border-radius: 12px !important; margin-bottom: 8px !important; }
+details summary { color: #e8edf5 !important; font-weight: 600 !important; padding: 12px 16px !important; }
+details[open] summary { border-bottom: 1px solid #1e2d4a !important; }
+
+/* Dataframes */
+[data-testid="stDataFrame"] { border: 1px solid #1e2d4a !important; border-radius: 14px; overflow: hidden; background: #0c1324 !important; }
+[data-testid="stDataFrame"] th { background: #10182d !important; color: #7a90b5 !important; font-size: 0.72rem !important; text-transform: uppercase !important; letter-spacing: 0.08em !important; }
+[data-testid="stDataFrame"] td { color: #e8edf5 !important; background: #0c1324 !important; font-size: 0.82rem !important; }
+
+/* Selectbox and inputs */
+[data-testid="stSelectbox"] > div > div { background: #0c1324 !important; border-color: #1e2d4a !important; color: #e8edf5 !important; }
+.stRadio label { color: #b8c9e6 !important; }
+
+/* Sidebar */
+section[data-testid="stSidebar"] { background-color: #0c1324 !important; border-right: 1px solid #1e2d4a !important; }
+section[data-testid="stSidebar"] p,
+section[data-testid="stSidebar"] span,
+section[data-testid="stSidebar"] label { color: #b8c9e6 !important; }
+
+/* Progress bar */
+[data-testid="stProgress"] > div > div { background: #3b7dff !important; }
+[data-testid="stProgress"] { background: #1e2d4a !important; border-radius: 999px !important; }
+
+/* Captions and alerts */
+.stCaption, [data-testid="stCaptionContainer"] { color: #4a5d7a !important; }
+[data-testid="stAlert"] { background: #10182d !important; border-color: #1e2d4a !important; color: #e8edf5 !important; border-radius: 12px !important; }
 </style>
 """, unsafe_allow_html=True)
 
