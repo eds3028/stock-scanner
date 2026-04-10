@@ -261,9 +261,13 @@ DIM_EXPLANATIONS = {
 def get_db():
     if not DB_PATH.exists():
         return None
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        # Open read-only so the dashboard never accidentally mutates the DB.
+        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        return conn
+    except Exception:
+        return None
 
 
 def get_latest_date(conn):
@@ -620,9 +624,12 @@ def main():
 
     # Sidebar
     with st.sidebar:
+        _active_universe = os.environ.get("UNIVERSE", "asx200")
         st.markdown(
             '<p style="font-size:1.08rem;font-weight:700;color:#e8edf5;margin:0 0 2px">ASX Scanner</p>'
-            f'<p style="font-size:0.75rem;color:#7a90b5;margin:0">Last scan: <b style="color:#e8edf5">{today}</b></p>',
+            f'<p style="font-size:0.75rem;color:#7a90b5;margin:0">Last scan: <b style="color:#e8edf5">{today}</b></p>'
+            f'<p style="font-size:0.72rem;color:#4a5d7a;margin:2px 0 0">Universe: '
+            f'<b style="color:#7a90b5">{_active_universe}</b></p>',
             unsafe_allow_html=True,
         )
         st.divider()
@@ -661,7 +668,10 @@ def main():
         if scan_log:
             st.markdown('<div class="section-label">Recent scans</div>', unsafe_allow_html=True)
             for s in scan_log[:3]:
-                st.markdown(f"**{s['scan_date']}** · {s['stocks_scanned']} stocks", help=f"Failed: {s['stocks_failed']}")
+                universe_label = s.get("universe") or ""
+                subtitle = f"{s['stocks_scanned']} stocks" + (f" · {universe_label}" if universe_label else "")
+                st.markdown(f"**{s['scan_date']}** · {subtitle}",
+                            help=f"Failed: {s['stocks_failed']}")
 
     filters = {
         "min_total": st.session_state.min_total, "min_value": st.session_state.min_value,
@@ -1035,11 +1045,27 @@ def main():
                 if s.get("provider_summary"):
                     try:
                         ps = json.loads(s["provider_summary"])
-                        providers_str = ", ".join(f"{k}: {v}" for k, v in ps.get("counts", {}).items())
+                        # provider_summary is now {provider: {attempts, successes, ...}}
+                        if isinstance(ps, dict) and ps and isinstance(next(iter(ps.values())), dict):
+                            providers_str = ", ".join(
+                                f"{k}: {v.get('successes', 0)}/{v.get('attempts', 0)}"
+                                for k, v in ps.items()
+                            )
+                        else:
+                            providers_str = ", ".join(f"{k}: {v}" for k, v in ps.get("counts", {}).items())
                     except Exception:
                         pass
-                scan_data.append({"Date": s["scan_date"], "Scanned": s["stocks_scanned"],
-                                   "Failed": s["stocks_failed"], "Providers": providers_str})
+                dur = s.get("duration_seconds")
+                dur_str = f"{dur:.0f}s" if dur else "—"
+                scan_data.append({
+                    "Date": s["scan_date"],
+                    "Universe": s.get("universe") or "—",
+                    "Scanned": s["stocks_scanned"],
+                    "Failed": s["stocks_failed"],
+                    "Duration": dur_str,
+                    "Providers": providers_str,
+                    "Run ID": (s.get("run_id") or "")[:8],
+                })
             st.dataframe(pd.DataFrame(scan_data), use_container_width=True, hide_index=True)
         else:
             st.caption("No completed scans yet.")

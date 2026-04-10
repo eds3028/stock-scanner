@@ -27,6 +27,9 @@ def check_env(*, exit_on_error: bool = False) -> bool:
     Returns True if the environment is fully configured, False if degraded.
     Calls sys.exit(1) only when exit_on_error=True and a hard failure is found.
     """
+    universe = os.environ.get("UNIVERSE", "asx200")
+    log.info("Universe: %s (override via UNIVERSE env var)", universe)
+
     missing_optional: list[str] = []
 
     for var, description in OPTIONAL_VARS.items():

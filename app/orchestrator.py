@@ -116,13 +116,30 @@ class DataOrchestrator:
                 completed_at TEXT,
                 stocks_scanned INTEGER,
                 stocks_failed INTEGER,
+                run_id TEXT,
+                universe TEXT,
+                duration_seconds REAL,
                 provider_summary TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS ticker_metrics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                scan_date TEXT NOT NULL,
+                ticker TEXT NOT NULL,
+                provider TEXT,
+                success INTEGER NOT NULL,
+                duration_seconds REAL,
+                score INTEGER,
+                scored_at REAL NOT NULL
             );
 
             CREATE INDEX IF NOT EXISTS idx_cache_ticker ON data_cache(ticker);
             CREATE INDEX IF NOT EXISTS idx_scores_ticker ON scores(ticker);
             CREATE INDEX IF NOT EXISTS idx_scores_date ON scores(scan_date);
             CREATE INDEX IF NOT EXISTS idx_scores_total ON scores(total_score);
+            CREATE INDEX IF NOT EXISTS idx_ticker_metrics_run ON ticker_metrics(run_id);
+            CREATE INDEX IF NOT EXISTS idx_ticker_metrics_date ON ticker_metrics(scan_date);
         """)
 
         # Migrate: add columns to scores if they don't exist
@@ -134,6 +151,17 @@ class DataOrchestrator:
         ]:
             try:
                 conn.execute(f"ALTER TABLE scores ADD COLUMN {col} {coltype}")
+            except Exception:
+                pass
+
+        # Migrate: add new scan_log columns if they don't exist
+        for col, coltype in [
+            ("run_id", "TEXT"),
+            ("universe", "TEXT"),
+            ("duration_seconds", "REAL"),
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE scan_log ADD COLUMN {col} {coltype}")
             except Exception:
                 pass
 

@@ -1,0 +1,253 @@
+# Stock scanner universe configuration.
+#
+# Controls which tickers the nightly scanner processes.
+# Override the active universe at runtime without editing this file:
+#
+#   UNIVERSE=asx20 docker compose up  (or set UNIVERSE in .env)
+#
+# Available built-in universes: asx20, asx200, watchlist
+# Add your own by copying the watchlist block and filling in tickers.
+
+active: asx200
+
+universes:
+
+  # ── ASX 20 ──────────────────────────────────────────────────────────────────
+  asx20:
+    name: "ASX 20"
+    description: "Australia's 20 largest companies by market capitalisation"
+    tickers:
+      - BHP.AX
+      - CBA.AX
+      - CSL.AX
+      - NAB.AX
+      - WBC.AX
+      - ANZ.AX
+      - WES.AX
+      - MQG.AX
+      - RIO.AX
+      - WOW.AX
+      - GMG.AX
+      - FMG.AX
+      - TLS.AX
+      - TCL.AX
+      - REA.AX
+      - QBE.AX
+      - IAG.AX
+      - COL.AX
+      - SUN.AX
+      - WDS.AX
+
+  # ── ASX 200 ─────────────────────────────────────────────────────────────────
+  asx200:
+    name: "ASX 200"
+    description: "S&P/ASX 200 index — Australia's 200 largest companies"
+    tickers:
+      - ANZ.AX
+      - BHP.AX
+      - CBA.AX
+      - CSL.AX
+      - NAB.AX
+      - WBC.AX
+      - WES.AX
+      - WOW.AX
+      - MQG.AX
+      - RIO.AX
+      - TLS.AX
+      - FMG.AX
+      - GMG.AX
+      - TCL.AX
+      - SCG.AX
+      - SUN.AX
+      - QBE.AX
+      - IAG.AX
+      - AMP.AX
+      - ASX.AX
+      - ALL.AX
+      - CWY.AX
+      - REA.AX
+      - WDS.AX
+      - STO.AX
+      - ORG.AX
+      - APA.AX
+      - AMC.AX
+      - BXB.AX
+      - COL.AX
+      - COH.AX
+      - ALX.AX
+      - MPL.AX
+      - NHF.AX
+      - RMD.AX
+      - ANN.AX
+      - JHX.AX
+      - SEK.AX
+      - CAR.AX
+      - CPU.AX
+      - XRO.AX
+      - WTC.AX
+      - APX.AX
+      - ALU.AX
+      - NEA.AX
+      - TNE.AX
+      - DXS.AX
+      - GPT.AX
+      - MGR.AX
+      - VCX.AX
+      - SGP.AX
+      - CLW.AX
+      - CIP.AX
+      - NST.AX
+      - NCM.AX
+      - EVN.AX
+      - OZL.AX
+      - IGO.AX
+      - MIN.AX
+      - LYC.AX
+      - PDN.AX
+      - PLS.AX
+      - AKE.AX
+      - S32.AX
+      - BSL.AX
+      - BLD.AX
+      - ABC.AX
+      - CSR.AX
+      - JHG.AX
+      - MFG.AX
+      - PPT.AX
+      - PTM.AX
+      - HUB.AX
+      - NWL.AX
+      - GQG.AX
+      - EQT.AX
+      - AFI.AX
+      - ARG.AX
+      - MLT.AX
+      - WHC.AX
+      - NEC.AX
+      - REH.AX
+      - SUL.AX
+      - UNI.AX
+      - WPR.AX
+      - LLC.AX
+      - CQR.AX
+      - HCW.AX
+      - RHC.AX
+      - SHL.AX
+      - ACF.AX
+      - IEL.AX
+      - KGN.AX
+      - MYX.AX
+      - MSB.AX
+      - APE.AX
+      - GUD.AX
+      - GWA.AX
+      - IPL.AX
+      - NUF.AX
+      - ORI.AX
+      - PNI.AX
+      - QAN.AX
+      - SYD.AX
+      - TAH.AX
+      - TWE.AX
+      - VVR.AX
+      - WOR.AX
+      - CCP.AX
+      - CLH.AX
+      - CVW.AX
+      - ELD.AX
+      - GNC.AX
+      - MTS.AX
+      - OML.AX
+      - SFR.AX
+      - SSM.AX
+      - SVW.AX
+      - SWM.AX
+      - TGR.AX
+      - VEA.AX
+      - VNT.AX
+      - AWC.AX
+      - DMP.AX
+      - DRR.AX
+      - HLO.AX
+      - HPI.AX
+      - IMD.AX
+      - ING.AX
+      - JIN.AX
+      - LNK.AX
+      - MVF.AX
+      - MWY.AX
+      - NWS.AX
+      - OFX.AX
+      - PGH.AX
+      - PMV.AX
+      - PPH.AX
+      - PRN.AX
+      - RDY.AX
+      - RWC.AX
+      - SCP.AX
+      - SKC.AX
+      - SPK.AX
+      - SRG.AX
+      - SSR.AX
+      - STX.AX
+      - SYR.AX
+      - TPW.AX
+      - TRS.AX
+      - UMG.AX
+      - URW.AX
+      - WGN.AX
+      - WSA.AX
+      - ALD.AX
+      - API.AX
+      - ARB.AX
+      - BEN.AX
+      - BOQ.AX
+      - CGF.AX
+      - CMW.AX
+      - CNU.AX
+      - DJW.AX
+      - DOW.AX
+      - EBO.AX
+      - ECX.AX
+      - FFI.AX
+      - FLT.AX
+      - GEM.AX
+      - HVN.AX
+      - IFL.AX
+      - ILU.AX
+      - JBH.AX
+      - KMD.AX
+      - LFS.AX
+      - LGL.AX
+      - MCY.AX
+      - MED.AX
+      - MRM.AX
+      - NBI.AX
+      - OGC.AX
+      - PAC.AX
+      - PBH.AX
+      - PPC.AX
+      - PSQ.AX
+      - PTB.AX
+      - RED.AX
+      - SBM.AX
+      - SDF.AX
+      - SIG.AX
+      - SKI.AX
+      - SLC.AX
+      - SOL.AX
+      - STW.AX
+      - THL.AX
+      - VOC.AX
+      - VRL.AX
+      - WEB.AX
+      - WGX.AX
+      - WPL.AX
+
+  # ── Watchlist ────────────────────────────────────────────────────────────────
+  # Add any tickers you want to track outside the main index.
+  watchlist:
+    name: "Watchlist"
+    description: "Custom watchlist — add your own tickers here"
+    tickers: []
+      # - TICKER.AX
