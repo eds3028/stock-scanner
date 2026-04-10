@@ -139,16 +139,25 @@ def store_score(conn, ticker: str, score_result: dict, stock_data,
         INSERT OR REPLACE INTO scores (
             ticker, scan_date, total_score,
             value_score, future_score, past_score, health_score, dividend_score,
+            weighted_total, adjusted_total, confidence_score, confidence_badge,
+            template_key, template_name, confidence_detail,
             raw_info, dimension_detail,
             company_name, sector, industry, market_cap, current_price,
             narrative, data_provider, data_completeness, data_fetched_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         ticker, scan_date,
         score_result["total_score"],
         dims["value"]["score"], dims["future"]["score"],
         dims["past"]["score"], dims["health"]["score"],
         dims["dividends"]["score"],
+        score_result.get("weighted_total"),
+        score_result.get("adjusted_total"),
+        score_result.get("confidence", {}).get("score"),
+        score_result.get("confidence", {}).get("badge"),
+        score_result.get("template_key"),
+        score_result.get("template_name"),
+        json.dumps(score_result.get("confidence", {})),
         json.dumps({k: v for k, v in info.items()
                     if isinstance(v, (str, int, float, bool, type(None)))}),
         json.dumps(dims),
@@ -242,6 +251,9 @@ def run_scan(universe_name: Optional[str] = None):
 
         try:
             info_dict = stock_data.to_scorer_dict()
+            info_dict["dataFetchedAt"] = stock_data.fetched_at
+            info_dict["dataCompleteness"] = stock_data.completeness_score
+            info_dict["dataProvider"] = stock_data.provider
             result = score_stock(info_dict, ticker)
             result["_info"] = info_dict
 

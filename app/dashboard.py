@@ -284,7 +284,9 @@ def get_all_scores(conn, scan_date, filters):
     query = """
         SELECT ticker, company_name, sector, industry, market_cap, current_price,
                total_score, value_score, future_score, past_score,
-               health_score, dividend_score, dimension_detail,
+               health_score, dividend_score, weighted_total, adjusted_total,
+               confidence_score, confidence_badge, template_key, template_name,
+               confidence_detail, raw_info, dimension_detail,
                narrative, data_provider, data_completeness, data_fetched_at
         FROM scores WHERE scan_date = ?
         AND total_score >= ? AND value_score >= ? AND future_score >= ?
@@ -748,7 +750,7 @@ def main():
                             {dim_tiles_html(stock['value_score'],stock['future_score'],stock['past_score'],stock['health_score'],stock['dividend_score'])}
                             <div class="card-footer-note">
                               ${stock['current_price']:.2f} &nbsp;·&nbsp;
-                              <span style="color:#4a5d7a;font-size:0.65rem">{(stock.get('data_provider') or '').split(' ')[0][:16]} {fmt_age(stock.get('data_fetched_at'))}</span>
+                              <span style="color:#4a5d7a;font-size:0.65rem">{(stock.get('template_name') or 'Template')[:18]} · {(stock.get('confidence_badge') or 'N/A')} conf · {(stock.get('data_provider') or '').split(' ')[0][:14]} {fmt_age(stock.get('data_fetched_at'))}</span>
                             </div>
                           </div>
                         </div>
@@ -847,10 +849,13 @@ def main():
                     provider = row.get("data_provider", "unknown")
                     fetched_at = row.get("data_fetched_at")
                     completeness = (row.get("data_completeness") or 0) * 100
+                    conf_score = (row.get("confidence_score") or 0) * 100
+                    conf_badge = row.get("confidence_badge") or "N/A"
                     age_str = fmt_age(fetched_at)
                     st.markdown(
                         f'<p style="color:#4a5d7a;font-size:0.73rem;margin-top:8px">'
-                        f'📡 {provider} &nbsp;·&nbsp; {age_str} &nbsp;·&nbsp; {completeness:.0f}% complete</p>',
+                        f'📡 {provider} &nbsp;·&nbsp; {age_str} &nbsp;·&nbsp; {completeness:.0f}% complete &nbsp;·&nbsp; '
+                        f'🧩 {(row.get("template_name") or "General")} &nbsp;·&nbsp; 🔒 {conf_badge} ({conf_score:.0f}%)</p>',
                         unsafe_allow_html=True,
                     )
 
@@ -858,8 +863,8 @@ def main():
                     price = row.get("current_price")
                     m1.metric("Price", f"${price:.2f}" if price else "—")
                     m2.metric("Market Cap", fmt_market_cap(row.get("market_cap")))
-                    m3.metric("Data", f"{completeness:.0f}%")
-                    m4.metric("Strongest", best_dimension_text(row))
+                    m3.metric("Confidence", f"{conf_badge} ({conf_score:.0f}%)")
+                    m4.metric("Adj Score", f"{(row.get('adjusted_total') or 0):.1f}/100")
 
                 with col2:
                     snowflake_svg_detail = svg_snowflake([
@@ -879,7 +884,7 @@ def main():
                 ]):
                     dim = dims.get(dim_key, {})
                     dim_score = dim.get("score", 0)
-                    checks = dim.get("checks", {})
+                    factors = dim.get("factors", {})
                     data = dim.get("data", {})
 
                     with st.expander(f"{label} · {dim_score}/6 · {desc}", expanded=(idx == 0)):
@@ -890,29 +895,31 @@ def main():
                             unsafe_allow_html=True
                         )
 
-                        check_items = list(checks.items())
-                        passed_checks = [(n, v) for n, v in check_items if v]
-                        failed_checks = [(n, v) for n, v in check_items if not v]
+                        factor_items = list(factors.items())
+                        strong = [(n, v) for n, v in factor_items if (v.get("score", 0) >= 0.8)]
+                        weak = [(n, v) for n, v in factor_items if (v.get("score", 0) < 0.55)]
 
                         cpa, cpf = st.columns(2)
                         with cpa:
-                            st.markdown("**Passed**")
-                            for name, _ in passed_checks:
+                            st.markdown("**Strong factors**")
+                            for name, meta in strong:
                                 exp_title, exp_text = CHECK_EXPLANATIONS.get(name, (name.replace("_", " ").title(), ""))
+                                factor_score = meta.get("score", 0)
                                 st.markdown(
                                     f'<div style="margin-bottom:6px">'
-                                    f'✅ <b style="color:#e8edf5">{exp_title}</b>'
+                                    f'✅ <b style="color:#e8edf5">{exp_title}</b> <span style="color:#7a90b5">({factor_score:.2f})</span>'
                                     f'<div style="color:#7a90b5;font-size:0.75rem;margin-left:20px;line-height:1.4">{exp_text}</div>'
                                     f'</div>',
                                     unsafe_allow_html=True
                                 )
                         with cpf:
-                            st.markdown("**Failed**")
-                            for name, _ in failed_checks:
+                            st.markdown("**Weak factors**")
+                            for name, meta in weak:
                                 exp_title, exp_text = CHECK_EXPLANATIONS.get(name, (name.replace("_", " ").title(), ""))
+                                factor_score = meta.get("score", 0)
                                 st.markdown(
                                     f'<div style="margin-bottom:6px">'
-                                    f'❌ <b style="color:#e8edf5">{exp_title}</b>'
+                                    f'❌ <b style="color:#e8edf5">{exp_title}</b> <span style="color:#7a90b5">({factor_score:.2f})</span>'
                                     f'<div style="color:#7a90b5;font-size:0.75rem;margin-left:20px;line-height:1.4">{exp_text}</div>'
                                     f'</div>',
                                     unsafe_allow_html=True
@@ -943,6 +950,35 @@ def main():
                         st.plotly_chart(fig, use_container_width=True, key="detail_history")
                         latest_delta = history[-1]["total_score"] - history[-2]["total_score"]
                         st.caption(f"Latest move: {fmt_delta(latest_delta)} vs prior scan. Reference bands: 14 = balanced, 20 = strong.")
+                        st.markdown("#### Change signals")
+                        hist_by_date = {h["scan_date"]: h for h in history}
+                        from datetime import datetime, timedelta
+                        today_dt = datetime.fromisoformat(today)
+                        deltas = {}
+                        for days in (30, 90, 180):
+                            target = (today_dt - timedelta(days=days)).date().isoformat()
+                            prior_dates = sorted(d for d in hist_by_date.keys() if d <= target)
+                            if prior_dates:
+                                prior = hist_by_date[prior_dates[-1]]
+                                deltas[days] = round((history[-1]["total_score"] or 0) - (prior["total_score"] or 0), 2)
+                            else:
+                                deltas[days] = None
+                        d1, d2, d3 = st.columns(3)
+                        d1.metric("30-day Δ", fmt_delta(deltas[30]) if deltas[30] is not None else "—")
+                        d2.metric("90-day Δ", fmt_delta(deltas[90]) if deltas[90] is not None else "—")
+                        d3.metric("180-day Δ", fmt_delta(deltas[180]) if deltas[180] is not None else "—")
+
+                        if len(history) >= 2:
+                            prev = history[-2]
+                            contributions = {
+                                "Value": (history[-1].get("value_score", 0) or 0) - (prev.get("value_score", 0) or 0),
+                                "Future": (history[-1].get("future_score", 0) or 0) - (prev.get("future_score", 0) or 0),
+                                "Past": (history[-1].get("past_score", 0) or 0) - (prev.get("past_score", 0) or 0),
+                                "Health": (history[-1].get("health_score", 0) or 0) - (prev.get("health_score", 0) or 0),
+                                "Dividends": (history[-1].get("dividend_score", 0) or 0) - (prev.get("dividend_score", 0) or 0),
+                            }
+                            top_move = sorted(contributions.items(), key=lambda kv: abs(kv[1]), reverse=True)[:2]
+                            st.caption("Factor attribution: " + ", ".join(f"{k} {fmt_delta(v)}" for k, v in top_move))
                 else:
                     st.caption("Score history builds up over multiple scans.")
 
