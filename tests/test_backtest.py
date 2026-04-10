@@ -4,7 +4,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 
-from backtest import run_backtest, forward_bucket_analysis
+from backtest import available_versions, forward_bucket_analysis, run_backtest
 
 
 def _seed(conn):
@@ -48,6 +48,38 @@ def _seed(conn):
     conn.commit()
 
 
+def _seed_without_version_column(conn):
+    conn.executescript(
+        """
+        CREATE TABLE scores (
+            ticker TEXT,
+            scan_date TEXT,
+            total_score REAL,
+            value_score REAL,
+            future_score REAL,
+            past_score REAL,
+            health_score REAL,
+            dividend_score REAL,
+            current_price REAL
+        );
+        """
+    )
+    rows = [
+        ("AAA.AX", "2025-01-31", 25, 5, 5, 5, 5, 5, 10),
+        ("BBB.AX", "2025-01-31", 20, 4, 4, 4, 4, 4, 10),
+        ("CCC.AX", "2025-01-31", 15, 3, 3, 3, 3, 3, 10),
+        ("DDD.AX", "2025-01-31", 10, 2, 2, 2, 2, 2, 10),
+        ("EEE.AX", "2025-01-31", 5, 1, 1, 1, 1, 1, 10),
+        ("AAA.AX", "2025-02-28", 25, 5, 5, 5, 5, 5, 11),
+        ("BBB.AX", "2025-02-28", 20, 4, 4, 4, 4, 4, 10.5),
+        ("CCC.AX", "2025-02-28", 15, 3, 3, 3, 3, 3, 10.1),
+        ("DDD.AX", "2025-02-28", 10, 2, 2, 2, 2, 2, 9.8),
+        ("EEE.AX", "2025-02-28", 5, 1, 1, 1, 1, 1, 9.6),
+    ]
+    conn.executemany("INSERT INTO scores VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
+    conn.commit()
+
+
 def test_backtest_outputs_key_metrics():
     conn = sqlite3.connect(":memory:")
     _seed(conn)
@@ -63,6 +95,17 @@ def test_backtest_outputs_key_metrics():
 def test_bucket_analysis_outputs_rows():
     conn = sqlite3.connect(":memory:")
     _seed(conn)
+    deciles, factors = forward_bucket_analysis(conn, scoring_model_version="v1", bucket_count=5, horizons=(1,))
+    assert not deciles.empty
+    assert not factors.empty
+
+
+def test_backtest_works_when_version_column_missing():
+    conn = sqlite3.connect(":memory:")
+    _seed_without_version_column(conn)
+    assert available_versions(conn) == ["v1"]
+    res = run_backtest(conn, scoring_model_version="v1", weighting="equal", transaction_cost_bps=0)
+    assert "cagr" in res.summary
     deciles, factors = forward_bucket_analysis(conn, scoring_model_version="v1", bucket_count=5, horizons=(1,))
     assert not deciles.empty
     assert not factors.empty
