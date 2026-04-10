@@ -258,7 +258,7 @@ class DataOrchestrator:
                         result = self.merge_data(result, data)
 
                     # If we have good enough data, stop trying
-                    if result.completeness_score >= 0.7:
+                    if result.completeness_score >= 0.65:
                         break
                 else:
                     self.log_fetch(ticker, provider.name, False, 0, "No data returned")
