@@ -80,3 +80,12 @@ def test_factor_data_has_raw_and_normalized_score():
 def test_score_includes_model_version():
     res = score_stock(_base(), "VER.AX")
     assert res["scoring_model_version"] == "v1"
+
+
+def test_explanation_layer_includes_auditable_points():
+    res = score_stock(_base(), "WHY.AX")
+    exp = res["explanation"]
+    assert len(exp["why_buy"]) == 3
+    assert len(exp["why_avoid"]) == 3
+    assert "factor_score=" in exp["why_buy"][0]
+    assert "Confidence is" in exp["confidence_note"]

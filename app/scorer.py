@@ -18,6 +18,34 @@ CATEGORY_WEIGHTS = {
 }
 
 
+FACTOR_LABELS = {
+    "dcf_margin": "DCF margin",
+    "pe_ratio": "P/E ratio",
+    "price_to_book": "Price to book",
+    "ev_ebitda": "EV/EBITDA",
+    "analyst_upside": "Analyst upside",
+    "earnings_growth": "Earnings growth",
+    "revenue_growth": "Revenue growth",
+    "roe": "ROE",
+    "eps_forward_delta": "EPS forward delta",
+    "analyst_coverage": "Analyst coverage",
+    "historical_roe": "Historical ROE",
+    "roa": "ROA",
+    "operating_margin": "Operating margin",
+    "gross_margin": "Gross margin",
+    "momentum_52w": "52-week momentum",
+    "debt_to_equity": "Debt to equity",
+    "current_ratio": "Current ratio",
+    "quick_ratio": "Quick ratio",
+    "net_cash_ratio": "Net cash ratio",
+    "free_cashflow_positive": "Free cash flow",
+    "dividend_yield": "Dividend yield",
+    "payout_ratio": "Payout ratio",
+    "fcf_cover": "Dividend FCF cover",
+    "yield_vs_5y": "Yield vs 5yr",
+}
+
+
 SECTOR_TEMPLATES = {
     "default": {
         "name": "General Equities",
@@ -285,6 +313,49 @@ def _confidence(info: dict) -> dict:
     }
 
 
+def _format_raw_value(raw):
+    if raw is None:
+        return "n/a"
+    if isinstance(raw, (int, float)):
+        if abs(raw) >= 1_000_000_000:
+            return f"{raw/1_000_000_000:.2f}B"
+        if abs(raw) >= 1000:
+            return f"{raw:,.1f}"
+        return f"{raw:.3g}"
+    return str(raw)
+
+
+def _build_explanation(dims: dict, confidence: dict) -> dict:
+    scored = []
+    for dim_name, dim_data in dims.items():
+        for factor_name, factor in dim_data.get("factors", {}).items():
+            scored.append({
+                "dimension": dim_name,
+                "factor": factor_name,
+                "label": FACTOR_LABELS.get(factor_name, factor_name.replace("_", " ").title()),
+                "score": factor.get("score", 0),
+                "raw": factor.get("raw"),
+            })
+
+    top_pos = sorted(scored, key=lambda x: x["score"], reverse=True)[:3]
+    top_neg = sorted(scored, key=lambda x: x["score"])[:3]
+
+    def mk(items, prefix):
+        out = []
+        for it in items:
+            out.append(f"{prefix} {it['label']} ({it['dimension']}): value={_format_raw_value(it['raw'])}, factor_score={it['score']:.2f}")
+        return out
+
+    conf_badge = confidence.get("badge", "Low")
+    note = f"Confidence is {conf_badge} ({confidence.get('score', 0):.0%}) based on freshness, completeness, and provider provenance."
+    return {
+        "why_buy": mk(top_pos, "+"),
+        "why_avoid": mk(top_neg, "-"),
+        "why_review": mk(top_neg, "!"),
+        "confidence_note": note,
+    }
+
+
 def score_stock(info: dict, ticker: str = "") -> dict:
     template_key, template = _resolve_template(info)
     value = score_value(info, template)
@@ -314,4 +385,5 @@ def score_stock(info: dict, ticker: str = "") -> dict:
         "max_score": 30,
         "dimensions": dims,
         "scoring_model_version": SCORING_MODEL_VERSION,
+        "explanation": _build_explanation(dims, confidence),
     }
