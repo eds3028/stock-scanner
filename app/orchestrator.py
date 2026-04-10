@@ -17,6 +17,10 @@ from datetime import datetime, date
 from pathlib import Path
 from typing import Optional
 
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 from providers.base import StockData, ProviderStatus
 from providers.yahooquery_provider import YahooQueryProvider
 from providers.finnhub_provider import FinnhubProvider
