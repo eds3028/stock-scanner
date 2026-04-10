@@ -264,7 +264,7 @@ def run_scan():
             log.error(f"Scoring failed for {ticker}: {e}")
             failed += 1
 
-        time.sleep(2.0)
+        time.sleep(5.0)
 
     # Log provider summary
     health = orchestrator.get_provider_health()
