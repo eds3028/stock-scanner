@@ -32,7 +32,6 @@ def run_scan_job():
 
 
 def has_data_today():
-    return False
     if not DB_PATH.exists():
         return False
     try:
