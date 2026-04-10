@@ -4,6 +4,8 @@ import sqlite3
 import json
 import math
 import os
+import subprocess
+import sys
 import time
 from datetime import date, datetime
 from pathlib import Path
@@ -855,6 +857,28 @@ def main():
         with c2:
             if st.button("Refresh", use_container_width=True):
                 st.rerun()
+
+        st.markdown('<div class="section-label" style="margin-top:8px">Scanner</div>', unsafe_allow_html=True)
+        trigger_scan = st.button("Run scanner now", use_container_width=True)
+        if trigger_scan:
+            conn.close()
+            with st.spinner("Running manual scan. This can take several minutes..."):
+                run = subprocess.run(
+                    [sys.executable, "scanner.py"],
+                    cwd=Path(__file__).parent,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            if run.returncode == 0:
+                st.success("Manual scan complete. Refreshing dashboard...")
+                st.rerun()
+            st.error("Manual scan failed. Review scanner logs below.")
+            if run.stderr:
+                st.code(run.stderr[-3000:], language="text")
+            if run.stdout:
+                st.code(run.stdout[-3000:], language="text")
+            return
 
         with st.expander("Portfolio tools", expanded=False):
             new_watchlist = st.text_input("Create watchlist", placeholder="e.g. High Conviction")
