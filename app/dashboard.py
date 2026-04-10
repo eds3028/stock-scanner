@@ -5,6 +5,7 @@ import json
 import math
 import os
 import time
+from datetime import date, datetime
 from pathlib import Path
 
 import streamlit as st
@@ -250,6 +251,9 @@ CHECK_EXPLANATIONS = {
     "pays_dividend": ("Pays Dividend", "The company pays a dividend. For income-focused investors, this is the starting point."),
     "yield_meaningful": ("Yield > 2%", "The dividend yield exceeds 2% - meaningful income compared to cash. Higher yields provide better income relative to your investment."),
     "payout_sustainable": ("Payout Ratio < 80%", "Less than 80% of earnings are paid out as dividends. A lower payout ratio leaves room for dividend growth and is less vulnerable to cuts."),
+    "payout_coverage": ("Payout Coverage", "Coverage above 1.0 means earnings cover the dividend. Higher is safer, especially above 1.4x."),
+    "franking_level": ("Franking Level", "Higher franking means more usable tax credits for Australian investors."),
+    "grossed_up_yield": ("Grossed-up Yield", "Estimated dividend yield after adding franking credits (assumes 30% company tax rate)."),
     "future_payout_covered": ("Future Payout", "The projected payout ratio in 3 years remains below 90%, suggesting the dividend is sustainable as earnings grow."),
     "fcf_covers_dividend": ("FCF Covers Dividend", "Free cash flow per share exceeds the dividend per share. Dividends funded by cash flow are more reliable than those funded by debt."),
     "yield_above_average": ("Yield vs 5yr Average", "Current dividend yield is at or above the 5-year average yield. This can indicate the stock is attractively priced for income investors."),
@@ -343,6 +347,13 @@ def apply_portfolio_overlay(conn, rows, filters):
 
     holdings = holdings_snapshot(conn, rows)
     rules = load_rules(conn)
+    dividend_yield_map = {}
+    for row in rows:
+        try:
+            raw = json.loads(row.get("raw_info") or "{}")
+            dividend_yield_map[row["ticker"]] = raw.get("dividendYield")
+        except Exception:
+            dividend_yield_map[row["ticker"]] = None
 
     sector_weights = {}
     for row in rows:
@@ -350,10 +361,16 @@ def apply_portfolio_overlay(conn, rows, filters):
         if h:
             sector_weights[row.get("sector") or "Unknown"] = sector_weights.get(row.get("sector") or "Unknown", 0) + h.current_weight
     sector_counts = {}
+    dividend_income_by_ticker = {}
+    total_dividend_income = 0.0
     for row in rows:
         if row["ticker"] in holdings:
             sector = row.get("sector") or "Unknown"
             sector_counts[sector] = sector_counts.get(sector, 0) + 1
+            h = holdings[row["ticker"]]
+            est_income = (h.shares or 0) * (row.get("current_price") or 0) * (dividend_yield_map.get(row["ticker"]) or 0)
+            dividend_income_by_ticker[row["ticker"]] = est_income
+            total_dividend_income += est_income
 
     enriched = []
     for row in rows:
@@ -364,6 +381,7 @@ def apply_portfolio_overlay(conn, rows, filters):
         row["target_weight"] = h.target_weight if h else 0.0
         row["current_weight"] = h.current_weight if h else 0.0
         row["cost_base"] = h.cost_base if h else None
+        row["acquired_at"] = h.acquired_at if h else None
         row["portfolio_fit"] = "Good fit"
         fit_flags = []
         if row["current_weight"] > rules["max_position_weight"]:
@@ -379,8 +397,46 @@ def apply_portfolio_overlay(conn, rows, filters):
             row["portfolio_fit"] = "Good stock, poor portfolio fit"
         row["fit_flags"] = fit_flags
 
+        gain_estimate = None
+        gain_pct = None
+        holding_days = None
+        days_to_cgt_discount = None
+        if row["owned"] and row.get("cost_base") is not None and row.get("current_price") is not None:
+            gain_estimate = (row["current_price"] - row["cost_base"]) * (h.shares or 0)
+            if row["cost_base"] > 0:
+                gain_pct = (row["current_price"] - row["cost_base"]) / row["cost_base"]
+        if row["owned"] and row.get("acquired_at"):
+            try:
+                acquired = datetime.fromisoformat(row["acquired_at"]).date()
+                holding_days = (date.today() - acquired).days
+                if holding_days < 365:
+                    days_to_cgt_discount = 365 - holding_days
+            except Exception:
+                pass
+
+        row["unrealised_gain_estimate"] = gain_estimate
+        row["unrealised_gain_pct"] = gain_pct
+        row["holding_days"] = holding_days
+        row["days_to_cgt_discount"] = days_to_cgt_discount
+        row["cgt_discount_eligible"] = bool(holding_days is not None and holding_days >= 365)
+
+        income_share = 0.0
+        if row["owned"] and total_dividend_income > 0:
+            income_share = dividend_income_by_ticker.get(ticker, 0.0) / total_dividend_income
+        row["dividend_income_share"] = income_share
+        if row["owned"] and income_share >= 0.30:
+            row["fit_flags"].append("Dividend concentration risk")
+
         if row["owned"]:
-            if row["current_weight"] > (row["target_weight"] + rules["rebalance_tolerance"]):
+            tax_deferral = (
+                row["current_weight"] > (row["target_weight"] + rules["rebalance_tolerance"])
+                and (row.get("days_to_cgt_discount") is not None)
+                and row["days_to_cgt_discount"] <= 60
+                and (row.get("unrealised_gain_estimate") or 0) > 0
+            )
+            if tax_deferral:
+                status = "Review Later (Tax)"
+            elif row["current_weight"] > (row["target_weight"] + rules["rebalance_tolerance"]):
                 status = "Trim Candidate"
             elif row["total_score"] < 14 or row["portfolio_fit"] != "Good fit":
                 status = "Review"
@@ -389,6 +445,11 @@ def apply_portfolio_overlay(conn, rows, filters):
         else:
             status = "New"
         row["portfolio_status"] = status
+        row["tax_prompt"] = (
+            f"Approaching 12-month CGT discount in {row['days_to_cgt_discount']} days."
+            if row.get("days_to_cgt_discount") is not None and row["days_to_cgt_discount"] <= 60 and (row.get("unrealised_gain_estimate") or 0) > 0
+            else ""
+        )
         row["rebalance_action"] = row["target_weight"] - row["current_weight"]
         enriched.append(row)
 
@@ -773,7 +834,7 @@ def main():
         sectors = get_sectors_with_count(conn, today)
         selected_sector = st.selectbox("Sector", sectors, label_visibility="collapsed")
         ownership_mode = st.selectbox("Mode", ["All", "Owned", "Discovery"], index=0)
-        status_mode = st.selectbox("Portfolio status", ["All", "New", "Hold", "Review", "Trim Candidate"], index=0)
+        status_mode = st.selectbox("Portfolio status", ["All", "New", "Hold", "Review", "Trim Candidate", "Review Later (Tax)"], index=0)
 
         watchlist_names = ["All watchlists"] + [w["name"] for w in get_watchlists(conn)]
         selected_watchlist = st.selectbox("Watchlist", watchlist_names, index=0)
@@ -926,6 +987,9 @@ def main():
                             <div class="card-footer-note">
                               <span style="color:#7a90b5;font-size:0.68rem">{'Owned' if stock.get('owned') else 'Discovery'} · Fit: {stock.get('portfolio_fit')}</span>
                             </div>
+                            <div class="card-footer-note">
+                              <span style="color:#9db0cf;font-size:0.66rem">{stock.get('tax_prompt') or ''}</span>
+                            </div>
                           </div>
                         </div>
                         """, unsafe_allow_html=True)
@@ -1042,9 +1106,21 @@ def main():
                     p = apply_portfolio_overlay(conn2, [row], {"ownership": "All", "portfolio_status": "All", "watchlist": "All watchlists"})
                     if p:
                         prow = p[0]
-                        m5, m6 = st.columns(2)
+                        m5, m6, m7, m8 = st.columns(4)
                         m5.metric("Portfolio status", prow.get("portfolio_status", "New"))
                         m6.metric("Current vs target", f"{prow.get('current_weight',0)*100:.1f}% / {prow.get('target_weight',0)*100:.1f}%")
+                        gain_val = prow.get("unrealised_gain_estimate")
+                        gain_pct = prow.get("unrealised_gain_pct")
+                        gain_label = "—" if gain_val is None else f"${gain_val:,.0f} ({(gain_pct or 0)*100:+.1f}%)"
+                        m7.metric("Unrealised gain est.", gain_label)
+                        cgt_label = "Eligible" if prow.get("cgt_discount_eligible") else (
+                            f"{prow.get('days_to_cgt_discount')} days" if prow.get("days_to_cgt_discount") is not None else "—"
+                        )
+                        m8.metric("12m CGT discount", cgt_label)
+                        if prow.get("tax_prompt"):
+                            st.caption(f"🧾 {prow.get('tax_prompt')}")
+                        if prow.get("dividend_income_share", 0) >= 0.30:
+                            st.caption(f"⚠️ Dividend concentration risk: {prow.get('dividend_income_share',0)*100:.1f}% of portfolio income from this holding.")
 
                 with col2:
                     snowflake_svg_detail = svg_snowflake([

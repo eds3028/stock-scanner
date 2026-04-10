@@ -22,6 +22,7 @@ class HoldingSnapshot:
     ticker: str
     shares: float
     cost_base: float
+    acquired_at: str | None
     target_weight: float
     current_weight: float
 
@@ -48,6 +49,7 @@ def init_portfolio_tables(conn: sqlite3.Connection) -> None:
             ticker TEXT PRIMARY KEY,
             shares REAL NOT NULL,
             cost_base REAL,
+            acquired_at TEXT,
             target_weight REAL DEFAULT 0,
             updated_at TEXT DEFAULT CURRENT_TIMESTAMP
         );
@@ -60,6 +62,10 @@ def init_portfolio_tables(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_watchlist_items_ticker ON watchlist_items(ticker);
         """
     )
+    try:
+        conn.execute("ALTER TABLE holdings ADD COLUMN acquired_at TEXT")
+    except Exception:
+        pass
 
 
 def get_watchlists(conn: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -103,19 +109,21 @@ def import_holdings_csv(conn: sqlite3.Connection, content: bytes) -> tuple[int, 
             shares = float(row.get("shares") or 0)
             cost_base = float(row.get("cost_base") or 0)
             target_weight = float(row.get("target_weight") or 0)
+            acquired_at = (row.get("acquired_at") or "").strip() or None
             if not ticker:
                 raise ValueError("empty ticker")
             conn.execute(
                 """
-                INSERT INTO holdings(ticker, shares, cost_base, target_weight, updated_at)
-                VALUES(?, ?, ?, ?, CURRENT_TIMESTAMP)
+                INSERT INTO holdings(ticker, shares, cost_base, acquired_at, target_weight, updated_at)
+                VALUES(?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 ON CONFLICT(ticker) DO UPDATE SET
                     shares=excluded.shares,
                     cost_base=excluded.cost_base,
+                    acquired_at=excluded.acquired_at,
                     target_weight=excluded.target_weight,
                     updated_at=CURRENT_TIMESTAMP
                 """,
-                (ticker, shares, cost_base, target_weight),
+                (ticker, shares, cost_base, acquired_at, target_weight),
             )
             imported += 1
         except Exception as exc:
@@ -143,7 +151,7 @@ def save_rules(conn: sqlite3.Connection, rules: dict[str, float]) -> None:
 
 
 def holdings_snapshot(conn: sqlite3.Connection, score_rows: list[dict[str, Any]]) -> dict[str, HoldingSnapshot]:
-    holdings = {r["ticker"]: dict(r) for r in conn.execute("SELECT ticker, shares, cost_base, target_weight FROM holdings").fetchall()}
+    holdings = {r["ticker"]: dict(r) for r in conn.execute("SELECT ticker, shares, cost_base, acquired_at, target_weight FROM holdings").fetchall()}
     portfolio_value = 0.0
     for row in score_rows:
         h = holdings.get(row["ticker"])
@@ -162,6 +170,7 @@ def holdings_snapshot(conn: sqlite3.Connection, score_rows: list[dict[str, Any]]
             ticker=row["ticker"],
             shares=h.get("shares") or 0,
             cost_base=h.get("cost_base") or 0,
+            acquired_at=h.get("acquired_at"),
             target_weight=h.get("target_weight") or 0,
             current_weight=current_val / portfolio_value,
         )

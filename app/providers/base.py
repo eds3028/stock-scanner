@@ -112,6 +112,7 @@ class StockData:
     dividend_rate: Optional[float] = None
     payout_ratio: Optional[float] = None
     five_year_avg_dividend_yield: Optional[float] = None
+    franking_level: Optional[float] = None
 
     # Profitability
     profit_margins: Optional[float] = None
@@ -158,6 +159,7 @@ class StockData:
     def to_scorer_dict(self) -> dict:
         """Convert to the dict format expected by scorer.py"""
         return {
+            "symbol": self.ticker,
             "currentPrice": self.current_price,
             "regularMarketPrice": self.current_price,
             "marketCap": self.market_cap,
@@ -176,6 +178,7 @@ class StockData:
             "dividendRate": self.dividend_rate,
             "payoutRatio": self.payout_ratio,
             "fiveYearAvgDividendYield": self.five_year_avg_dividend_yield,
+            "frankingLevel": self.franking_level,
             "beta": self.beta,
             "fiftyTwoWeekLow": self.fifty_two_week_low,
             "fiftyTwoWeekHigh": self.fifty_two_week_high,
