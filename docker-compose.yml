@@ -11,16 +11,17 @@ services:
       - "8501:8501"
     volumes:
       - /opt/stacks/stocks/data:/data
+    env_file:
+      - .env
     environment:
-      - TZ=Australia/Perth
-      # Ollama - your existing setup
-      - OLLAMA_HOST=http://192.168.107.54:11434
-      - OLLAMA_MODEL=llama3.1:8b
-      # Data providers - add keys as you get them
-      # yahooquery needs no key
-      - FINNHUB_API_KEY=d7c446pr01quh9fcevqgd7c446pr01quh9fcevr0
-      - FMP_API_KEY=fveSyboVK9NuFuAzm5b0oVNP6UuduIxi
-      - ALPHA_VANTAGE_API_KEY=DT2WTN7K3A3RT5L2
+      - TZ=${TZ:-Australia/Perth}
+      # Ollama - optional AI narrative generation
+      - OLLAMA_HOST=${OLLAMA_HOST:-}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-llama3.1:8b}
+      # Data providers - yahooquery needs no key; others are optional extras
+      - FINNHUB_API_KEY=${FINNHUB_API_KEY:-}
+      - FMP_API_KEY=${FMP_API_KEY:-}
+      - ALPHA_VANTAGE_API_KEY=${ALPHA_VANTAGE_API_KEY:-}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health')"]
       interval: 30s
