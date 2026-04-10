@@ -19,6 +19,13 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 DB_PATH = Path("/data/stocks.db")
+
+# Run at import time so the banner appears before any scan work starts.
+try:
+    from env_check import check_env
+    check_env()
+except ImportError:
+    pass
 AWST = pytz.timezone("Australia/Perth")
 
 

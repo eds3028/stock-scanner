@@ -10,10 +10,13 @@ import logging
 import os
 from datetime import datetime, date
 from pathlib import Path
+from typing import Optional
 
 import requests
 
 from orchestrator import DataOrchestrator
+from universe import get_universe
+from run_logger import ScanRunLogger
 
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.1:8b")
@@ -26,33 +29,6 @@ log = logging.getLogger(__name__)
 
 DB_PATH = Path("/data/stocks.db")
 
-ASX_200 = [
-    "ANZ.AX", "BHP.AX", "CBA.AX", "CSL.AX", "NAB.AX", "WBC.AX", "WES.AX", "WOW.AX",
-    "MQG.AX", "RIO.AX", "TLS.AX", "FMG.AX", "GMG.AX", "TCL.AX", "SCG.AX", "SUN.AX",
-    "QBE.AX", "IAG.AX", "AMP.AX", "ASX.AX", "ALL.AX", "CWY.AX", "REA.AX", "WDS.AX",
-    "STO.AX", "ORG.AX", "APA.AX", "AMC.AX", "BXB.AX", "COL.AX", "COH.AX", "ALX.AX",
-    "MPL.AX", "NHF.AX", "RMD.AX", "ANN.AX", "JHX.AX", "SEK.AX", "CAR.AX", "CPU.AX",
-    "XRO.AX", "WTC.AX", "APX.AX", "ALU.AX", "NEA.AX", "TNE.AX", "DXS.AX", "GPT.AX",
-    "MGR.AX", "VCX.AX", "SGP.AX", "CLW.AX", "CIP.AX", "NST.AX", "NCM.AX", "EVN.AX",
-    "OZL.AX", "IGO.AX", "MIN.AX", "LYC.AX", "PDN.AX", "PLS.AX", "AKE.AX", "S32.AX",
-    "BSL.AX", "BLD.AX", "ABC.AX", "CSR.AX", "JHG.AX", "MFG.AX", "PPT.AX", "PTM.AX",
-    "HUB.AX", "NWL.AX", "GQG.AX", "EQT.AX", "AFI.AX", "ARG.AX", "MLT.AX", "WHC.AX",
-    "NEC.AX", "REH.AX", "SUL.AX", "UNI.AX", "WPR.AX", "LLC.AX", "CQR.AX", "HCW.AX",
-    "RHC.AX", "SHL.AX", "ACF.AX", "IEL.AX", "KGN.AX", "MYX.AX", "MSB.AX", "APE.AX",
-    "GUD.AX", "GWA.AX", "IPL.AX", "NUF.AX", "ORI.AX", "PNI.AX", "QAN.AX", "SYD.AX",
-    "TAH.AX", "TWE.AX", "VVR.AX", "WOR.AX", "CCP.AX", "CLH.AX", "CVW.AX", "ELD.AX",
-    "GNC.AX", "MTS.AX", "OML.AX", "SFR.AX", "SSM.AX", "SVW.AX", "SWM.AX", "TGR.AX",
-    "VEA.AX", "VNT.AX", "AWC.AX", "DMP.AX", "DRR.AX", "HLO.AX", "HPI.AX", "IMD.AX",
-    "ING.AX", "JIN.AX", "LNK.AX", "MVF.AX", "MWY.AX", "NWS.AX", "OFX.AX", "PGH.AX",
-    "PMV.AX", "PPH.AX", "PRN.AX", "RDY.AX", "RWC.AX", "SCP.AX", "SKC.AX", "SPK.AX",
-    "SRG.AX", "SSR.AX", "STX.AX", "SYR.AX", "TPW.AX", "TRS.AX", "UMG.AX", "URW.AX",
-    "WGN.AX", "WSA.AX", "ALD.AX", "API.AX", "ARB.AX", "BEN.AX", "BOQ.AX", "CGF.AX",
-    "CMW.AX", "CNU.AX", "DJW.AX", "DOW.AX", "EBO.AX", "ECX.AX", "FFI.AX", "FLT.AX",
-    "GEM.AX", "HVN.AX", "IFL.AX", "ILU.AX", "JBH.AX", "KMD.AX", "LFS.AX", "LGL.AX",
-    "MCY.AX", "MED.AX", "MRM.AX", "NBI.AX", "OGC.AX", "PAC.AX", "PBH.AX", "PPC.AX",
-    "PSQ.AX", "PTB.AX", "RED.AX", "SBM.AX", "SDF.AX", "SIG.AX", "SKI.AX", "SLC.AX",
-    "SOL.AX", "STW.AX", "THL.AX", "VOC.AX", "VRL.AX", "WEB.AX", "WGX.AX", "WPL.AX",
-]
 
 
 def build_narrative_prompt(ticker: str, info: dict, score_result: dict) -> str:
@@ -205,8 +181,23 @@ def get_movers(conn, today: str, yesterday: str) -> list:
     return [dict(r) for r in rows]
 
 
-def run_scan():
+def store_ticker_metric(conn, run_id: str, scan_date: str, ticker: str,
+                        provider: str, success: bool,
+                        duration_s: float, score: Optional[int]):
+    conn.execute("""
+        INSERT INTO ticker_metrics
+        (run_id, scan_date, ticker, provider, success, duration_seconds, score, scored_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (run_id, scan_date, ticker, provider, int(success),
+          round(duration_s, 2), score, time.time()))
+
+
+def run_scan(universe_name: Optional[str] = None):
     from scorer import score_stock
+
+    display_name, tickers = get_universe(universe_name)
+    run_logger = ScanRunLogger(universe=display_name, log_dir=DB_PATH.parent)
+    run_id = run_logger.run_id
 
     orchestrator = DataOrchestrator(DB_PATH)
     scan_date = date.today().isoformat()
@@ -220,7 +211,8 @@ def run_scan():
     except Exception:
         log.warning("Ollama not reachable - skipping narratives")
 
-    log.info(f"Starting scan for {scan_date} - {len(ASX_200)} stocks")
+    log.info(f"Starting scan run_id={run_id} universe='{display_name}' "
+             f"date={scan_date} tickers={len(tickers)}")
 
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -228,22 +220,25 @@ def run_scan():
     scanned = 0
     failed = 0
     narratives_generated = 0
-    provider_counts = {}
 
-    for i, ticker in enumerate(ASX_200):
-        log.info(f"[{i+1}/{len(ASX_200)}] {ticker}")
+    for i, ticker in enumerate(tickers):
+        log.info(f"[{i+1}/{len(tickers)}] {ticker}")
+        run_logger.start_ticker(ticker)
 
         stock_data = orchestrator.fetch(ticker)
 
         if stock_data is None:
             failed += 1
+            run_logger.end_ticker(ticker, provider="none", success=False)
+            store_ticker_metric(conn, run_id, scan_date, ticker,
+                                "none", False,
+                                run_logger.ticker_outcomes[ticker]["duration_s"], None)
+            conn.commit()
             log.warning(f"All providers failed for {ticker}")
             time.sleep(1.0)
             continue
 
-        # Track which providers contributed
         primary_provider = stock_data.provider.split("+")[0].split(" ")[0]
-        provider_counts[primary_provider] = provider_counts.get(primary_provider, 0) + 1
 
         try:
             info_dict = stock_data.to_scorer_dict()
@@ -257,37 +252,44 @@ def run_scan():
                     narratives_generated += 1
 
             store_score(conn, ticker, result, stock_data, scan_date, narrative)
+            run_logger.end_ticker(ticker, provider=primary_provider,
+                                  success=True, score=result["total_score"])
+            store_ticker_metric(conn, run_id, scan_date, ticker,
+                                primary_provider, True,
+                                run_logger.ticker_outcomes[ticker]["duration_s"],
+                                result["total_score"])
             conn.commit()
             scanned += 1
 
         except Exception as e:
             log.error(f"Scoring failed for {ticker}: {e}")
+            run_logger.end_ticker(ticker, provider=primary_provider, success=False)
+            store_ticker_metric(conn, run_id, scan_date, ticker,
+                                primary_provider, False,
+                                run_logger.ticker_outcomes[ticker]["duration_s"], None)
+            conn.commit()
             failed += 1
 
         time.sleep(5.0)
 
-    # Log provider summary
-    health = orchestrator.get_provider_health()
-    provider_summary = json.dumps({
-        "counts": provider_counts,
-        "health": [{
-            "name": p["name"],
-            "status": p["status"],
-            "success_rate": p["success_rate"]
-        } for p in health]
-    })
+    run_logger.finish()
+    summary = run_logger.summary()
 
     conn.execute("""
         INSERT INTO scan_log
-        (scan_date, started_at, completed_at, stocks_scanned, stocks_failed, provider_summary)
-        VALUES (?, ?, ?, ?, ?, ?)
+        (scan_date, started_at, completed_at, stocks_scanned, stocks_failed,
+         run_id, universe, duration_seconds, provider_summary)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (scan_date, started_at, datetime.now().isoformat(),
-          scanned, failed, provider_summary))
+          scanned, failed,
+          run_id, display_name,
+          summary["duration_seconds"],
+          json.dumps(summary["provider_stats"])))
     conn.commit()
     conn.close()
 
     log.info(f"Scan complete: {scanned} scored, {failed} failed, "
-             f"{narratives_generated} narratives, providers: {provider_counts}")
+             f"{narratives_generated} narratives, run_id={run_id}")
 
 
 if __name__ == "__main__":
