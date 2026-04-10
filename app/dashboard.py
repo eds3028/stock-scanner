@@ -284,17 +284,34 @@ def get_previous_date(conn, today):
 
 
 def get_all_scores(conn, scan_date, filters):
+    available_columns = {row["name"] for row in conn.execute("PRAGMA table_info(scores)").fetchall()}
+    optional_columns = [
+        "weighted_total",
+        "adjusted_total",
+        "confidence_score",
+        "confidence_badge",
+        "template_key",
+        "template_name",
+        "confidence_detail",
+        "raw_info",
+        "dimension_detail",
+        "narrative",
+        "data_provider",
+        "data_completeness",
+        "data_fetched_at",
+    ]
+    optional_selects = [
+        col if col in available_columns else f"NULL as {col}"
+        for col in optional_columns
+    ]
     query = """
         SELECT ticker, company_name, sector, industry, market_cap, current_price,
                total_score, value_score, future_score, past_score,
-               health_score, dividend_score, weighted_total, adjusted_total,
-               confidence_score, confidence_badge, template_key, template_name,
-               confidence_detail, raw_info, dimension_detail,
-               narrative, data_provider, data_completeness, data_fetched_at
+               health_score, dividend_score, {optional_selects}
         FROM scores WHERE scan_date = ?
         AND total_score >= ? AND value_score >= ? AND future_score >= ?
         AND past_score >= ? AND health_score >= ? AND dividend_score >= ?
-    """
+    """.format(optional_selects=", ".join(optional_selects))
     params = [scan_date, filters["min_total"], filters["min_value"], filters["min_future"],
               filters["min_past"], filters["min_health"], filters["min_dividend"]]
     if filters.get("sector") and not str(filters["sector"]).startswith("All"):
