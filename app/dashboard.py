@@ -10,6 +10,9 @@ from pathlib import Path
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
+import plotly.express as px
+
+from backtest import run_backtest, forward_bucket_analysis, available_versions, export_backtest_csv
 
 DB_PATH = Path(os.environ.get("DB_PATH", "/data/stocks.db"))
 
@@ -581,6 +584,22 @@ def make_radar(row, ticker):
     return fig
 
 
+
+
+def _fmt_pct(v):
+    if v is None or (isinstance(v, float) and math.isnan(v)):
+        return "—"
+    return f"{v*100:.2f}%"
+
+
+def _line_monotonicity(df):
+    if df.empty:
+        return None
+    agg = df.groupby("bucket", as_index=False)["avg_return"].mean().sort_values("bucket")
+    if len(agg) < 3:
+        return None
+    return agg["avg_return"].corr(agg["bucket"])
+
 def make_history_chart(history):
     if len(history) < 2: return None
     df = pd.DataFrame(history)
@@ -682,8 +701,8 @@ def main():
         "sector": selected_sector,
     }
 
-    tab_discover, tab_movers, tab_detail, tab_health = st.tabs([
-        "🔍 Discover", "📊 Movers", "🔎 Deep Dive", "🩺 Data Health"
+    tab_discover, tab_movers, tab_detail, tab_validation, tab_health = st.tabs([
+        "🔍 Discover", "📊 Movers", "🔎 Deep Dive", "🧪 Validation", "🩺 Data Health"
     ])
 
     # ── DISCOVER ──────────────────────────────────────────────────────────────
@@ -996,6 +1015,76 @@ def main():
                     st.caption("Narrative will be generated on next scan.")
 
             conn2.close()
+
+    # ── VALIDATION ───────────────────────────────────────────────────────────
+    with tab_validation:
+        st.markdown("### Backtest & predictive power")
+        versions = available_versions(conn)
+        cva, cvb, cvc, cvd = st.columns([1.1, 1, 1, 1])
+        with cva:
+            selected_version = st.selectbox("Scoring model version", versions, index=max(len(versions)-1, 0))
+        with cvb:
+            weighting = st.selectbox("Weighting", ["equal", "score"])
+        with cvc:
+            tc_bps = st.number_input("Txn cost (bps)", min_value=0.0, max_value=200.0, value=10.0, step=1.0)
+        with cvd:
+            bucket_mode = st.selectbox("Buckets", ["Deciles (10)", "Quintiles (5)"])
+
+        bt = run_backtest(conn, scoring_model_version=selected_version, weighting=weighting, transaction_cost_bps=tc_bps)
+        if bt.summary.get("error"):
+            st.info(bt.summary["error"])
+        else:
+            m1, m2, m3, m4, m5 = st.columns(5)
+            m1.metric("CAGR", _fmt_pct(bt.summary.get("cagr")))
+            m2.metric("Max drawdown", _fmt_pct(bt.summary.get("max_drawdown")))
+            m3.metric("Sharpe", f"{bt.summary.get('sharpe', 0):.2f}")
+            m4.metric("Avg turnover", _fmt_pct(bt.summary.get("avg_turnover")))
+            m5.metric("Hit rate", _fmt_pct(bt.summary.get("hit_rate")))
+            if bt.summary.get("benchmark_cagr") is not None:
+                st.caption(f"Benchmark ({bt.summary.get('benchmark_ticker')}): CAGR {_fmt_pct(bt.summary.get('benchmark_cagr'))}")
+            else:
+                st.caption("Benchmark vs ASX 200 requires benchmark rows (ticker ^AXJO) in scores table.")
+
+            eq = bt.monthly.copy()
+            eq["period_end"] = pd.to_datetime(eq["period_end"])
+            fig_eq = go.Figure()
+            fig_eq.add_trace(go.Scatter(x=eq["period_end"], y=eq["equity"], name="Strategy", line=dict(color="#3b7dff")))
+            fig_eq.update_layout(template="plotly_dark", height=320, margin=dict(l=10, r=10, t=10, b=10),
+                                 paper_bgcolor="#0c1324", plot_bgcolor="#0c1324")
+            st.plotly_chart(fig_eq, use_container_width=True, key="bt_equity")
+
+            csv_paths = export_backtest_csv(bt, Path("/data/exports"), f"backtest_{selected_version}_{weighting}")
+            st.caption(f"CSV export written: {csv_paths['summary']}")
+
+        st.divider()
+        st.markdown("### Decile/quintile forward returns")
+        bucket_count = 10 if bucket_mode.startswith("Decile") else 5
+        bucket_df, factor_df = forward_bucket_analysis(conn, scoring_model_version=selected_version, bucket_count=bucket_count)
+
+        if bucket_df.empty:
+            st.info("Need more historical scans to compute bucket analysis.")
+        else:
+            horizon = st.selectbox("Forward horizon", [1, 3, 6, 12], index=0, key="bucket_h")
+            snap = bucket_df[bucket_df["horizon_m"] == horizon]
+            agg = snap.groupby("bucket", as_index=False)["avg_return"].mean()
+            mono = _line_monotonicity(snap)
+            st.caption("Monotonicity (bucket vs avg return correlation): " + (f"{mono:.2f}" if mono is not None else "n/a"))
+            fig_b = px.bar(agg, x="bucket", y="avg_return", template="plotly_dark", color="avg_return",
+                           color_continuous_scale="Blues", labels={"avg_return": "Avg return", "bucket": "Bucket"})
+            fig_b.update_layout(height=320, margin=dict(l=10, r=10, t=10, b=10), paper_bgcolor="#0c1324", plot_bgcolor="#0c1324")
+            st.plotly_chart(fig_b, use_container_width=True, key="bucket_bar")
+
+            st.markdown("#### Factor buckets")
+            fac = factor_df[factor_df["horizon_m"] == horizon]
+            if fac.empty:
+                st.caption("No factor-bucket rows for selected horizon.")
+            else:
+                fac_agg = fac.groupby(["factor", "bucket"], as_index=False)["avg_return"].mean()
+                fig_f = px.line(fac_agg, x="bucket", y="avg_return", color="factor", markers=True, template="plotly_dark")
+                fig_f.update_layout(height=360, margin=dict(l=10, r=10, t=10, b=10), paper_bgcolor="#0c1324", plot_bgcolor="#0c1324")
+                st.plotly_chart(fig_f, use_container_width=True, key="factor_lines")
+
+        st.info("Survivorship-bias note: this analysis uses only tickers present in stored scans and does not include delisted names unless they were captured historically.")
 
     # ── DATA HEALTH ───────────────────────────────────────────────────────────
     with tab_health:

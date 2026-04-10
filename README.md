@@ -173,6 +173,32 @@ Each stock receives a score from **0 to 30** made up of five dimensions (6 point
 
 ---
 
+
+## Model validation (Milestone 3)
+
+The dashboard now includes a **Validation** tab to test whether the scoring model has predictive value.
+
+### Backtest engine
+
+- Monthly rebalance simulation over stored scan history
+- Weighting modes: **equal weight** and **score weighted**
+- Transaction cost assumptions in basis points (bps)
+- KPI output: **CAGR, max drawdown, Sharpe, turnover, hit rate**
+- CSV exports written to `/data/exports` for summary, monthly returns, and holdings
+- Supports running by `scoring_model_version`
+
+### Decile/quintile analysis
+
+- Buckets stocks by total score into deciles (or quintiles)
+- Compares forward returns over **1m / 3m / 6m / 12m**
+- Repeats bucket tests for individual factor dimensions (Value/Future/Past/Health/Dividends)
+- Visual charts in dashboard to assess monotonicity
+
+### Survivorship bias note
+
+Backtests and bucket studies use the rows available in the `scores` table. If historical scans exclude delisted companies or missing symbols, results can overstate real-world performance. Treat all outputs as directional research evidence, not executable performance.
+
+
 ## Project structure
 
 ```

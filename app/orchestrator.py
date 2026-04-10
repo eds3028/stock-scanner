@@ -113,6 +113,7 @@ class DataOrchestrator:
                 data_provider TEXT,
                 data_completeness REAL,
                 data_fetched_at REAL,
+                scoring_model_version TEXT NOT NULL DEFAULT "v1",
                 UNIQUE(ticker, scan_date)
             );
 
@@ -145,6 +146,7 @@ class DataOrchestrator:
             CREATE INDEX IF NOT EXISTS idx_scores_ticker ON scores(ticker);
             CREATE INDEX IF NOT EXISTS idx_scores_date ON scores(scan_date);
             CREATE INDEX IF NOT EXISTS idx_scores_total ON scores(total_score);
+            CREATE INDEX IF NOT EXISTS idx_scores_version ON scores(scoring_model_version);
             CREATE INDEX IF NOT EXISTS idx_ticker_metrics_run ON ticker_metrics(run_id);
             CREATE INDEX IF NOT EXISTS idx_ticker_metrics_date ON ticker_metrics(scan_date);
         """)
@@ -162,6 +164,7 @@ class DataOrchestrator:
             ("template_key", "TEXT"),
             ("template_name", "TEXT"),
             ("confidence_detail", "TEXT"),
+            ("scoring_model_version", "TEXT NOT NULL DEFAULT 'v1'"),
         ]:
             try:
                 conn.execute(f"ALTER TABLE scores ADD COLUMN {col} {coltype}")
