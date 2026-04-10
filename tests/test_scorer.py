@@ -75,3 +75,8 @@ def test_factor_data_has_raw_and_normalized_score():
     factor = res["dimensions"]["value"]["factors"]["pe_ratio"]
     assert "raw" in factor
     assert "score" in factor
+
+
+def test_score_includes_model_version():
+    res = score_stock(_base(), "VER.AX")
+    assert res["scoring_model_version"] == "v1"

@@ -7,6 +7,8 @@ import time
 from dataclasses import dataclass
 
 
+SCORING_MODEL_VERSION = "v1"
+
 CATEGORY_WEIGHTS = {
     "value": 0.26,
     "future": 0.24,
@@ -311,4 +313,5 @@ def score_stock(info: dict, ticker: str = "") -> dict:
         "total_score": round(adjusted * 0.3, 2),
         "max_score": 30,
         "dimensions": dims,
+        "scoring_model_version": SCORING_MODEL_VERSION,
     }

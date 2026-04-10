@@ -143,8 +143,8 @@ def store_score(conn, ticker: str, score_result: dict, stock_data,
             template_key, template_name, confidence_detail,
             raw_info, dimension_detail,
             company_name, sector, industry, market_cap, current_price,
-            narrative, data_provider, data_completeness, data_fetched_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            narrative, data_provider, data_completeness, data_fetched_at, scoring_model_version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         ticker, scan_date,
         score_result["total_score"],
@@ -170,6 +170,7 @@ def store_score(conn, ticker: str, score_result: dict, stock_data,
         stock_data.provider,
         stock_data.completeness_score,
         stock_data.fetched_at,
+        score_result.get("scoring_model_version", "v1"),
     ))
 
 
