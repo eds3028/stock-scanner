@@ -65,18 +65,26 @@ div[data-testid="stMetricLabel"] { font-size: 0.72rem; color: #7a90b5 !important
 hr { border-color: #1e2d4a !important; margin: 8px 0 !important; }
 
 /* Tabs - larger touch targets for iPad */
-.stTabs [data-baseweb="tab-list"] { border-bottom: 1px solid #1e2d4a; gap: 0; background: #0c1324 !important; border-radius: 12px 12px 0 0; padding: 4px 4px 0; }
+.stTabs { position: relative; z-index: 1; }
+.stTabs [data-baseweb="tab-list"] {
+  border-bottom: 2px solid #1e2d4a !important; gap: 4px !important;
+  background: transparent !important; padding: 0 !important;
+}
 .stTabs [data-baseweb="tab"] {
   color: #7a90b5 !important; font-size: 0.9rem !important; font-weight: 600 !important;
-  padding: 14px 28px !important; border-radius: 8px 8px 0 0 !important;
+  padding: 16px 32px !important; border-radius: 0 !important;
   border-bottom: 3px solid transparent !important; background: transparent !important;
-  min-width: 120px !important; text-align: center !important;
+  min-width: 130px !important; text-align: center !important;
+  margin-bottom: -2px !important;
 }
-.stTabs [aria-selected="true"] { color: #3b7dff !important; border-bottom-color: #3b7dff !important; background: rgba(59,125,255,0.08) !important; }
-.stTabs [data-baseweb="tab"]:hover { color: #b8d0ff !important; background: rgba(255,255,255,0.04) !important; }
+.stTabs [aria-selected="true"] {
+  color: #3b7dff !important; border-bottom: 3px solid #3b7dff !important;
+  background: transparent !important;
+}
+.stTabs [data-baseweb="tab"]:hover { color: #b8d0ff !important; }
 
 /* Tab content panels */
-.stTabs [data-baseweb="tab-panel"] { padding-top: 1.2rem !important; }
+.stTabs [data-baseweb="tab-panel"] { padding-top: 1.5rem !important; }
 .section-label {
   font-size: 0.65rem; font-weight: 700; letter-spacing: 0.12em;
   text-transform: uppercase; color: #4a5d7a; margin-bottom: 6px;
@@ -836,7 +844,15 @@ def main():
                     m4.metric("Strongest", best_dimension_text(row))
 
                 with col2:
-                    st.plotly_chart(make_radar(row, selected_ticker), use_container_width=True, key="detail_radar")
+                    snowflake_svg_detail = svg_snowflake([
+                        row.get('value_score',0), row.get('future_score',0),
+                        row.get('past_score',0), row.get('health_score',0),
+                        row.get('dividend_score',0)
+                    ], size=260)
+                    st.markdown(
+                        f'<div style="display:flex;justify-content:center;align-items:center;padding:10px 0">{snowflake_svg_detail}</div>',
+                        unsafe_allow_html=True
+                    )
 
                 st.divider()
 
