@@ -223,7 +223,7 @@ def make_radar(scores, ticker):
     fig = go.Figure()
     fig.add_trace(go.Scatterpolar(
         r=values_closed, theta=dims_closed, fill='toself',
-        fillcolor=color + "33", line=dict(color=color, width=2), name=ticker,
+        fillcolor=color, opacity=0.2, line=dict(color=color, width=2), name=ticker,
     ))
     fig.update_layout(
         polar=dict(
