@@ -263,7 +263,7 @@ class DataOrchestrator:
                 log.warning(f"[{ticker}] {provider.name} error: {e}")
 
             # Small delay between providers to be respectful
-            time.sleep(0.5)
+            time.sleep(2.0)
 
         if result:
             self.save_cache(result)
