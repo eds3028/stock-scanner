@@ -236,6 +236,10 @@ class DataOrchestrator:
             if not provider.health.is_available:
                 log.debug(f"[{ticker}] Skipping {provider.name} - circuit open or unavailable")
                 continue
+            # Skip providers known to not cover ASX on free tier
+            if ".AX" in ticker and provider.name in ("fmp", "alpha_vantage"):
+                log.debug(f"[{ticker}] Skipping {provider.name} - no ASX free tier coverage")
+                continue        
 
             log.info(f"[{ticker}] Trying {provider.name}...")
             providers_tried.append(provider.name)
