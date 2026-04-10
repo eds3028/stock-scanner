@@ -1,3 +1,4 @@
+# Updated 2026-04-10
 FROM python:3.12-slim
 
 WORKDIR /app
@@ -6,9 +7,10 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
-RUN ls -la
 
-RUN mkdir -p /data
+RUN mkdir -p /data /app/providers
+
+ENV PYTHONPATH=/app
 
 EXPOSE 8501
 
