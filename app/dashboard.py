@@ -319,7 +319,9 @@ def main():
         st.markdown("## 🔬 ASX Scanner")
         st.markdown(f'<div class="section-label">Last scan</div>', unsafe_allow_html=True)
         st.markdown(f"**{today}**")
-
+        if st.button("🔄 Refresh data"):
+            st.rerun()
+            
         st.divider()
         st.markdown('<div class="section-label">Filters</div>', unsafe_allow_html=True)
         sectors = get_sectors(conn, today)
