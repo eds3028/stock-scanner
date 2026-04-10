@@ -1,5 +1,3 @@
-version: "3.8"
-
 # Shared environment fragments
 x-common-env: &common-env
   TZ: ${TZ:-Australia/Perth}
@@ -21,15 +19,13 @@ services:
     restart: unless-stopped
     volumes:
       - /opt/stacks/stocks/data:/data
-    env_file:
-      - .env
     environment:
       <<: *common-env
       OLLAMA_HOST: ${OLLAMA_HOST:-}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.1:8b}
 
   # ── Dashboard ────────────────────────────────────────────────────────────────
-  # Read-only Streamlit UI.  Restarting or redeploy-ing the dashboard never
+  # Read-only Streamlit UI.  Restarting or redeploying the dashboard never
   # interrupts an in-progress scan.
   dashboard:
     build:
@@ -47,8 +43,6 @@ services:
       - "8501:8501"
     volumes:
       - /opt/stacks/stocks/data:/data
-    env_file:
-      - .env
     environment:
       <<: *common-env
     depends_on:
