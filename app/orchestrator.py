@@ -142,6 +142,35 @@ class DataOrchestrator:
                 scored_at REAL NOT NULL
             );
 
+
+            CREATE TABLE IF NOT EXISTS watchlists (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS watchlist_items (
+                watchlist_id INTEGER NOT NULL,
+                ticker TEXT NOT NULL,
+                note TEXT,
+                added_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (watchlist_id, ticker),
+                FOREIGN KEY (watchlist_id) REFERENCES watchlists(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS holdings (
+                ticker TEXT PRIMARY KEY,
+                shares REAL NOT NULL,
+                cost_base REAL,
+                target_weight REAL DEFAULT 0,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS portfolio_config (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            );
+
             CREATE INDEX IF NOT EXISTS idx_cache_ticker ON data_cache(ticker);
             CREATE INDEX IF NOT EXISTS idx_scores_ticker ON scores(ticker);
             CREATE INDEX IF NOT EXISTS idx_scores_date ON scores(scan_date);
@@ -149,6 +178,7 @@ class DataOrchestrator:
             CREATE INDEX IF NOT EXISTS idx_scores_version ON scores(scoring_model_version);
             CREATE INDEX IF NOT EXISTS idx_ticker_metrics_run ON ticker_metrics(run_id);
             CREATE INDEX IF NOT EXISTS idx_ticker_metrics_date ON ticker_metrics(scan_date);
+            CREATE INDEX IF NOT EXISTS idx_watchlist_items_ticker ON watchlist_items(ticker);
         """)
 
         # Migrate: add columns to scores if they don't exist

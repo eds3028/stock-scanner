@@ -13,6 +13,16 @@ import plotly.graph_objects as go
 import plotly.express as px
 
 from backtest import run_backtest, forward_bucket_analysis, available_versions, export_backtest_csv
+from portfolio import (
+    add_watchlist_tickers,
+    create_watchlist,
+    get_watchlists,
+    holdings_snapshot,
+    import_holdings_csv,
+    init_portfolio_tables,
+    load_rules,
+    save_rules,
+)
 
 DB_PATH = Path(os.environ.get("DB_PATH", "/data/stocks.db"))
 
@@ -265,9 +275,9 @@ def get_db():
     if not DB_PATH.exists():
         return None
     try:
-        # Open read-only so the dashboard never accidentally mutates the DB.
-        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+        conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
+        init_portfolio_tables(conn)
         return conn
     except Exception:
         return None
@@ -302,7 +312,83 @@ def get_all_scores(conn, scan_date, filters):
         query += " AND sector = ?"
         params.append(sector)
     query += " ORDER BY total_score DESC, health_score DESC"
-    return [dict(r) for r in conn.execute(query, params).fetchall()]
+    rows = [dict(r) for r in conn.execute(query, params).fetchall()]
+    return apply_portfolio_overlay(conn, rows, filters)
+
+
+def apply_portfolio_overlay(conn, rows, filters):
+    watchlists = get_watchlists(conn)
+    wl_map = {w["id"]: w["name"] for w in watchlists}
+    wl_items = conn.execute("SELECT watchlist_id, ticker FROM watchlist_items").fetchall()
+    ticker_watchlists = {}
+    for r in wl_items:
+        ticker_watchlists.setdefault(r["ticker"], []).append(wl_map.get(r["watchlist_id"], ""))
+
+    holdings = holdings_snapshot(conn, rows)
+    rules = load_rules(conn)
+
+    sector_weights = {}
+    for row in rows:
+        h = holdings.get(row["ticker"])
+        if h:
+            sector_weights[row.get("sector") or "Unknown"] = sector_weights.get(row.get("sector") or "Unknown", 0) + h.current_weight
+    sector_counts = {}
+    for row in rows:
+        if row["ticker"] in holdings:
+            sector = row.get("sector") or "Unknown"
+            sector_counts[sector] = sector_counts.get(sector, 0) + 1
+
+    enriched = []
+    for row in rows:
+        ticker = row["ticker"]
+        row["watchlists"] = [w for w in ticker_watchlists.get(ticker, []) if w]
+        h = holdings.get(ticker)
+        row["owned"] = h is not None
+        row["target_weight"] = h.target_weight if h else 0.0
+        row["current_weight"] = h.current_weight if h else 0.0
+        row["cost_base"] = h.cost_base if h else None
+        row["portfolio_fit"] = "Good fit"
+        fit_flags = []
+        if row["current_weight"] > rules["max_position_weight"]:
+            fit_flags.append("Position concentration")
+        sector = row.get("sector") or "Unknown"
+        if sector_weights.get(sector, 0) > rules["max_sector_weight"]:
+            fit_flags.append("Sector cap exceeded")
+        if (row.get("market_cap") or 0) < rules["liquidity_floor_market_cap"]:
+            fit_flags.append("Liquidity floor breach")
+        if sector_counts.get(sector, 0) >= rules["max_sector_names"]:
+            fit_flags.append("Sector overlap warning")
+        if fit_flags:
+            row["portfolio_fit"] = "Good stock, poor portfolio fit"
+        row["fit_flags"] = fit_flags
+
+        if row["owned"]:
+            if row["current_weight"] > (row["target_weight"] + rules["rebalance_tolerance"]):
+                status = "Trim Candidate"
+            elif row["total_score"] < 14 or row["portfolio_fit"] != "Good fit":
+                status = "Review"
+            else:
+                status = "Hold"
+        else:
+            status = "New"
+        row["portfolio_status"] = status
+        row["rebalance_action"] = row["target_weight"] - row["current_weight"]
+        enriched.append(row)
+
+    status_filter = filters.get("portfolio_status", "All")
+    if status_filter != "All":
+        enriched = [r for r in enriched if r["portfolio_status"] == status_filter]
+
+    watchlist_filter = filters.get("watchlist", "All watchlists")
+    if watchlist_filter != "All watchlists":
+        enriched = [r for r in enriched if watchlist_filter in r["watchlists"]]
+
+    ownership_filter = filters.get("ownership", "All")
+    if ownership_filter == "Owned":
+        enriched = [r for r in enriched if r["owned"]]
+    elif ownership_filter == "Discovery":
+        enriched = [r for r in enriched if not r["owned"]]
+    return enriched
 
 
 def get_movers(conn, today, yesterday):
@@ -487,6 +573,9 @@ def active_filter_chips(filters):
     if filters.get("min_past", 0) > 0: chips.append(f"Past ≥ {filters['min_past']}")
     if filters.get("min_health", 0) > 0: chips.append(f"Health ≥ {filters['min_health']}")
     if filters.get("min_dividend", 0) > 0: chips.append(f"Dividends ≥ {filters['min_dividend']}")
+    if filters.get("ownership", "All") != "All": chips.append(filters["ownership"])
+    if filters.get("portfolio_status", "All") != "All": chips.append(f"Status: {filters['portfolio_status']}")
+    if filters.get("watchlist", "All watchlists") != "All watchlists": chips.append(f"Watchlist: {filters['watchlist']}")
     return chips
 
 
@@ -666,6 +755,11 @@ def main():
         st.markdown('<div class="section-label" style="margin-top:8px">Sector</div>', unsafe_allow_html=True)
         sectors = get_sectors_with_count(conn, today)
         selected_sector = st.selectbox("Sector", sectors, label_visibility="collapsed")
+        ownership_mode = st.selectbox("Mode", ["All", "Owned", "Discovery"], index=0)
+        status_mode = st.selectbox("Portfolio status", ["All", "New", "Hold", "Review", "Trim Candidate"], index=0)
+
+        watchlist_names = ["All watchlists"] + [w["name"] for w in get_watchlists(conn)]
+        selected_watchlist = st.selectbox("Watchlist", watchlist_names, index=0)
 
         with st.expander("Score thresholds", expanded=False):
             st.slider("Min total", 0, 30, key="min_total")
@@ -684,6 +778,43 @@ def main():
             if st.button("Refresh", use_container_width=True):
                 st.rerun()
 
+        with st.expander("Portfolio tools", expanded=False):
+            new_watchlist = st.text_input("Create watchlist", placeholder="e.g. High Conviction")
+            if st.button("Add watchlist", use_container_width=True) and new_watchlist:
+                if create_watchlist(conn, new_watchlist):
+                    conn.commit()
+                    st.success("Watchlist added")
+                    st.rerun()
+            current_watchlists = get_watchlists(conn)
+            if current_watchlists:
+                wl_choice = st.selectbox("Edit watchlist", [w["name"] for w in current_watchlists], index=0)
+                wl = next((w for w in current_watchlists if w["name"] == wl_choice), None)
+                tickers = st.text_input("Add tickers (comma-separated)", placeholder="BHP.AX,CBA.AX")
+                if st.button("Add tickers", use_container_width=True) and wl and tickers.strip():
+                    added = add_watchlist_tickers(conn, wl["id"], tickers.split(","))
+                    conn.commit()
+                    st.success(f"Added {added} tickers")
+            csv_file = st.file_uploader("Import holdings CSV", type=["csv"])
+            if csv_file and st.button("Import holdings", use_container_width=True):
+                imported, errors = import_holdings_csv(conn, csv_file.getvalue())
+                conn.commit()
+                if imported:
+                    st.success(f"Imported {imported} holdings")
+                for e in errors[:5]:
+                    st.warning(e)
+
+        with st.expander("Portfolio rules", expanded=False):
+            rules = load_rules(conn)
+            rules["max_position_weight"] = st.number_input("Max position weight", min_value=0.01, max_value=1.0, value=float(rules["max_position_weight"]), step=0.01)
+            rules["max_sector_weight"] = st.number_input("Max sector weight", min_value=0.05, max_value=1.0, value=float(rules["max_sector_weight"]), step=0.01)
+            rules["liquidity_floor_market_cap"] = st.number_input("Liquidity floor (market cap)", min_value=0.0, value=float(rules["liquidity_floor_market_cap"]), step=50_000_000.0)
+            rules["max_sector_names"] = st.number_input("Sector overlap warning count", min_value=1, max_value=20, value=int(rules["max_sector_names"]), step=1)
+            rules["rebalance_tolerance"] = st.number_input("Rebalance tolerance", min_value=0.0, max_value=0.25, value=float(rules["rebalance_tolerance"]), step=0.005)
+            if st.button("Save rules", use_container_width=True):
+                save_rules(conn, rules)
+                conn.commit()
+                st.success("Rules saved")
+
         st.divider()
         scan_log = get_scan_log(conn)
         if scan_log:
@@ -699,6 +830,9 @@ def main():
         "min_future": st.session_state.min_future, "min_past": st.session_state.min_past,
         "min_health": st.session_state.min_health, "min_dividend": st.session_state.min_dividend,
         "sector": selected_sector,
+        "ownership": ownership_mode,
+        "portfolio_status": status_mode,
+        "watchlist": selected_watchlist,
     }
 
     tab_discover, tab_movers, tab_detail, tab_validation, tab_health = st.tabs([
@@ -756,6 +890,7 @@ def main():
                             <div class="card-submeta">
                               <span>{fmt_market_cap(stock.get('market_cap'))}</span>
                               <span class="badge {badge_cls}">{band}</span>
+                              <span class="badge badge-blue">{stock.get('portfolio_status','New')}</span>
                             </div>
                             <div class="card-hero">
                               <div class="card-score-wrap">
@@ -770,6 +905,9 @@ def main():
                             <div class="card-footer-note">
                               ${stock['current_price']:.2f} &nbsp;·&nbsp;
                               <span style="color:#4a5d7a;font-size:0.65rem">{(stock.get('template_name') or 'Template')[:18]} · {(stock.get('confidence_badge') or 'N/A')} conf · {(stock.get('data_provider') or '').split(' ')[0][:14]} {fmt_age(stock.get('data_fetched_at'))}</span>
+                            </div>
+                            <div class="card-footer-note">
+                              <span style="color:#7a90b5;font-size:0.68rem">{'Owned' if stock.get('owned') else 'Discovery'} · Fit: {stock.get('portfolio_fit')}</span>
                             </div>
                           </div>
                         </div>
@@ -884,6 +1022,12 @@ def main():
                     m2.metric("Market Cap", fmt_market_cap(row.get("market_cap")))
                     m3.metric("Confidence", f"{conf_badge} ({conf_score:.0f}%)")
                     m4.metric("Adj Score", f"{(row.get('adjusted_total') or 0):.1f}/100")
+                    p = apply_portfolio_overlay(conn2, [row], {"ownership": "All", "portfolio_status": "All", "watchlist": "All watchlists"})
+                    if p:
+                        prow = p[0]
+                        m5, m6 = st.columns(2)
+                        m5.metric("Portfolio status", prow.get("portfolio_status", "New"))
+                        m6.metric("Current vs target", f"{prow.get('current_weight',0)*100:.1f}% / {prow.get('target_weight',0)*100:.1f}%")
 
                 with col2:
                     snowflake_svg_detail = svg_snowflake([
@@ -1000,6 +1144,32 @@ def main():
                             st.caption("Factor attribution: " + ", ".join(f"{k} {fmt_delta(v)}" for k, v in top_move))
                 else:
                     st.caption("Score history builds up over multiple scans.")
+
+                exp = None
+                try:
+                    raw = json.loads(row.get("raw_info") or "{}")
+                    from scorer import score_stock
+                    exp = score_stock(raw, selected_ticker).get("explanation")
+                except Exception:
+                    exp = None
+
+                if exp:
+                    st.divider()
+                    st.markdown("#### Why buy / avoid / review")
+                    cexp1, cexp2, cexp3 = st.columns(3)
+                    with cexp1:
+                        st.markdown("**Top positives**")
+                        for line in exp.get("why_buy", [])[:3]:
+                            st.caption(line)
+                    with cexp2:
+                        st.markdown("**Top concerns**")
+                        for line in exp.get("why_avoid", [])[:3]:
+                            st.caption(line)
+                    with cexp3:
+                        st.markdown("**Why review now**")
+                        for line in exp.get("why_review", [])[:3]:
+                            st.caption(line)
+                        st.caption(exp.get("confidence_note", ""))
 
                 narrative = row.get("narrative")
                 if narrative:
