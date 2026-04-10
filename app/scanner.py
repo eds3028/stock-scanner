@@ -1,6 +1,6 @@
 """
-Nightly scanner - fetches ASX 200 constituents, pulls yahooquery data,
-runs scoring engine, generates Ollama narratives, stores in SQLite.
+Nightly scanner - uses DataOrchestrator for resilient multi-provider data fetching.
+Runs scoring engine, generates Ollama narratives, stores in SQLite.
 """
 
 import sqlite3
@@ -12,9 +12,9 @@ from datetime import datetime, date
 from pathlib import Path
 
 import requests
-from yahooquery import Ticker
 
-# --- Config ---
+from orchestrator import DataOrchestrator
+
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.1:8b")
 
@@ -53,137 +53,6 @@ ASX_200 = [
     "PSQ.AX", "PTB.AX", "RED.AX", "SBM.AX", "SDF.AX", "SIG.AX", "SKI.AX", "SLC.AX",
     "SOL.AX", "STW.AX", "THL.AX", "VOC.AX", "VRL.AX", "WEB.AX", "WGX.AX", "WPL.AX",
 ]
-
-
-def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def init_db():
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = get_db()
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS scores (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ticker TEXT NOT NULL,
-            scan_date TEXT NOT NULL,
-            total_score INTEGER,
-            value_score INTEGER,
-            future_score INTEGER,
-            past_score INTEGER,
-            health_score INTEGER,
-            dividend_score INTEGER,
-            raw_info TEXT,
-            dimension_detail TEXT,
-            company_name TEXT,
-            sector TEXT,
-            industry TEXT,
-            market_cap REAL,
-            current_price REAL,
-            narrative TEXT,
-            UNIQUE(ticker, scan_date)
-        );
-
-        CREATE TABLE IF NOT EXISTS scan_log (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            scan_date TEXT,
-            started_at TEXT,
-            completed_at TEXT,
-            stocks_scanned INTEGER,
-            stocks_failed INTEGER
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_scores_ticker ON scores(ticker);
-        CREATE INDEX IF NOT EXISTS idx_scores_date ON scores(scan_date);
-        CREATE INDEX IF NOT EXISTS idx_scores_total ON scores(total_score);
-    """)
-    try:
-        conn.execute("ALTER TABLE scores ADD COLUMN narrative TEXT")
-        conn.commit()
-    except Exception:
-        pass
-    conn.commit()
-    conn.close()
-    log.info("Database initialised")
-
-
-def fetch_stock_data(ticker: str) -> dict | None:
-    """Fetch stock data via yahooquery. Returns normalised dict or None."""
-    try:
-        stock = Ticker(ticker, timeout=15)
-
-        summary = stock.summary_detail.get(ticker, {})
-        key_stats = stock.key_stats.get(ticker, {})
-        financial_data = stock.financial_data.get(ticker, {})
-        asset_profile = stock.asset_profile.get(ticker, {})
-        price_data = stock.price.get(ticker, {})
-
-        for module in [summary, key_stats, financial_data, price_data]:
-            if isinstance(module, str):
-                log.warning(f"Error module for {ticker}: {module}")
-                return None
-
-        info = {}
-
-        info["currentPrice"] = price_data.get("regularMarketPrice")
-        info["regularMarketPrice"] = price_data.get("regularMarketPrice")
-        info["marketCap"] = price_data.get("marketCap")
-        info["longName"] = price_data.get("longName") or price_data.get("shortName", ticker)
-        info["shortName"] = price_data.get("shortName", ticker)
-
-        info["trailingPE"] = summary.get("trailingPE")
-        info["forwardPE"] = summary.get("forwardPE")
-        info["priceToBook"] = summary.get("priceToBook")
-        info["dividendYield"] = summary.get("dividendYield")
-        info["dividendRate"] = summary.get("dividendRate")
-        info["payoutRatio"] = summary.get("payoutRatio")
-        info["fiveYearAvgDividendYield"] = summary.get("fiveYearAvgDividendYield")
-        info["beta"] = summary.get("beta")
-        info["fiftyTwoWeekLow"] = summary.get("fiftyTwoWeekLow")
-        info["fiftyTwoWeekHigh"] = summary.get("fiftyTwoWeekHigh")
-
-        info["enterpriseToEbitda"] = key_stats.get("enterpriseToEbitda")
-        info["forwardEps"] = key_stats.get("forwardEps")
-        info["trailingEps"] = key_stats.get("trailingEps")
-        info["sharesOutstanding"] = key_stats.get("sharesOutstanding")
-        info["bookValue"] = key_stats.get("bookValue")
-
-        info["currentRatio"] = financial_data.get("currentRatio")
-        info["quickRatio"] = financial_data.get("quickRatio")
-        info["debtToEquity"] = financial_data.get("debtToEquity")
-        info["totalCash"] = financial_data.get("totalCash")
-        info["totalDebt"] = financial_data.get("totalDebt")
-        info["freeCashflow"] = financial_data.get("freeCashflow")
-        info["operatingCashflow"] = financial_data.get("operatingCashflow")
-        info["ebitda"] = financial_data.get("ebitda")
-        info["returnOnEquity"] = financial_data.get("returnOnEquity")
-        info["returnOnAssets"] = financial_data.get("returnOnAssets")
-        info["profitMargins"] = financial_data.get("profitMargins")
-        info["grossMargins"] = financial_data.get("grossMargins")
-        info["operatingMargins"] = financial_data.get("operatingMargins")
-        info["revenueGrowth"] = financial_data.get("revenueGrowth")
-        info["earningsGrowth"] = financial_data.get("earningsGrowth")
-        info["totalRevenue"] = financial_data.get("totalRevenue")
-        info["interestExpense"] = financial_data.get("interestExpense")
-        info["targetMeanPrice"] = financial_data.get("targetMeanPrice")
-        info["targetLowPrice"] = financial_data.get("targetLowPrice")
-        info["targetHighPrice"] = financial_data.get("targetHighPrice")
-        info["numberOfAnalystOpinions"] = financial_data.get("numberOfAnalystOpinions")
-
-        info["sector"] = asset_profile.get("sector", "") if isinstance(asset_profile, dict) else ""
-        info["industry"] = asset_profile.get("industry", "") if isinstance(asset_profile, dict) else ""
-
-        if not info.get("currentPrice"):
-            log.warning(f"No price data for {ticker}")
-            return None
-
-        return info
-
-    except Exception as e:
-        log.warning(f"Failed to fetch {ticker}: {e}")
-        return None
 
 
 def build_narrative_prompt(ticker: str, info: dict, score_result: dict) -> str:
@@ -278,41 +147,44 @@ def generate_narrative(ticker: str, info: dict, score_result: dict) -> str | Non
         if response.status_code == 200:
             narrative = response.json().get("response", "").strip()
             if narrative:
-                log.info(f"Narrative generated for {ticker} ({len(narrative)} chars)")
                 return narrative
-        log.warning(f"Ollama returned status {response.status_code} for {ticker}")
-        return None
-    except requests.exceptions.ConnectionError:
-        log.warning(f"Could not connect to Ollama at {OLLAMA_HOST} - skipping narratives")
         return None
     except Exception as e:
         log.warning(f"Narrative generation failed for {ticker}: {e}")
         return None
 
 
-def store_score(conn, ticker: str, info: dict, score_result: dict, scan_date: str, narrative: str = None):
+def store_score(conn, ticker: str, score_result: dict, stock_data,
+                scan_date: str, narrative: str = None):
     dims = score_result["dimensions"]
+    info = score_result.get("_info", {})
+
     conn.execute("""
         INSERT OR REPLACE INTO scores (
             ticker, scan_date, total_score,
             value_score, future_score, past_score, health_score, dividend_score,
             raw_info, dimension_detail,
             company_name, sector, industry, market_cap, current_price,
-            narrative
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            narrative, data_provider, data_completeness, data_fetched_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         ticker, scan_date,
         score_result["total_score"],
         dims["value"]["score"], dims["future"]["score"],
         dims["past"]["score"], dims["health"]["score"],
         dims["dividends"]["score"],
-        json.dumps({k: v for k, v in info.items() if isinstance(v, (str, int, float, bool, type(None)))}),
+        json.dumps({k: v for k, v in info.items()
+                    if isinstance(v, (str, int, float, bool, type(None)))}),
         json.dumps(dims),
-        info.get("longName") or info.get("shortName", ticker),
-        info.get("sector", ""), info.get("industry", ""),
-        info.get("marketCap"),
-        info.get("currentPrice") or info.get("regularMarketPrice"),
+        stock_data.company_name or ticker,
+        stock_data.sector or "",
+        stock_data.industry or "",
+        stock_data.market_cap,
+        stock_data.current_price,
         narrative,
+        stock_data.provider,
+        stock_data.completeness_score,
+        stock_data.fetched_at,
     ))
 
 
@@ -336,7 +208,7 @@ def get_movers(conn, today: str, yesterday: str) -> list:
 def run_scan():
     from scorer import score_stock
 
-    init_db()
+    orchestrator = DataOrchestrator(DB_PATH)
     scan_date = date.today().isoformat()
     started_at = datetime.now().isoformat()
 
@@ -344,56 +216,78 @@ def run_scan():
     try:
         r = requests.get(f"{OLLAMA_HOST}/api/tags", timeout=5)
         ollama_available = r.status_code == 200
-        if ollama_available:
-            log.info(f"Ollama available at {OLLAMA_HOST} - narratives will be generated")
-        else:
-            log.warning(f"Ollama not reachable at {OLLAMA_HOST} - skipping narratives")
+        log.info(f"Ollama {'available' if ollama_available else 'not available'}")
     except Exception:
-        log.warning(f"Ollama not reachable at {OLLAMA_HOST} - skipping narratives")
+        log.warning("Ollama not reachable - skipping narratives")
 
     log.info(f"Starting scan for {scan_date} - {len(ASX_200)} stocks")
 
-    conn = get_db()
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+
     scanned = 0
     failed = 0
     narratives_generated = 0
+    provider_counts = {}
 
     for i, ticker in enumerate(ASX_200):
-        log.info(f"[{i+1}/{len(ASX_200)}] Scanning {ticker}")
-        info = fetch_stock_data(ticker)
+        log.info(f"[{i+1}/{len(ASX_200)}] {ticker}")
 
-        if info is None:
+        stock_data = orchestrator.fetch(ticker)
+
+        if stock_data is None:
             failed += 1
-            log.warning(f"Skipping {ticker} - no data")
-            time.sleep(2.0)
+            log.warning(f"All providers failed for {ticker}")
+            time.sleep(1.0)
             continue
 
+        # Track which providers contributed
+        primary_provider = stock_data.provider.split("+")[0].split(" ")[0]
+        provider_counts[primary_provider] = provider_counts.get(primary_provider, 0) + 1
+
         try:
-            result = score_stock(info, ticker)
+            info_dict = stock_data.to_scorer_dict()
+            result = score_stock(info_dict, ticker)
+            result["_info"] = info_dict
 
             narrative = None
             if ollama_available:
-                narrative = generate_narrative(ticker, info, result)
+                narrative = generate_narrative(ticker, info_dict, result)
                 if narrative:
                     narratives_generated += 1
 
-            store_score(conn, ticker, info, result, scan_date, narrative)
+            store_score(conn, ticker, result, stock_data, scan_date, narrative)
             conn.commit()
             scanned += 1
+
         except Exception as e:
             log.error(f"Scoring failed for {ticker}: {e}")
             failed += 1
 
         time.sleep(2.0)
 
+    # Log provider summary
+    health = orchestrator.get_provider_health()
+    provider_summary = json.dumps({
+        "counts": provider_counts,
+        "health": [{
+            "name": p["name"],
+            "status": p["status"],
+            "success_rate": p["success_rate"]
+        } for p in health]
+    })
+
     conn.execute("""
-        INSERT INTO scan_log (scan_date, started_at, completed_at, stocks_scanned, stocks_failed)
-        VALUES (?, ?, ?, ?, ?)
-    """, (scan_date, started_at, datetime.now().isoformat(), scanned, failed))
+        INSERT INTO scan_log
+        (scan_date, started_at, completed_at, stocks_scanned, stocks_failed, provider_summary)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (scan_date, started_at, datetime.now().isoformat(),
+          scanned, failed, provider_summary))
     conn.commit()
     conn.close()
 
-    log.info(f"Scan complete: {scanned} scored, {failed} failed, {narratives_generated} narratives generated")
+    log.info(f"Scan complete: {scanned} scored, {failed} failed, "
+             f"{narratives_generated} narratives, providers: {provider_counts}")
 
 
 if __name__ == "__main__":
