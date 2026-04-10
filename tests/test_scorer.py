@@ -3,7 +3,7 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "app"))
 
-from scorer import score_stock, score_value
+from scorer import score_stock, score_value, score_dividends
 
 
 def _base(**overrides):
@@ -89,3 +89,14 @@ def test_explanation_layer_includes_auditable_points():
     assert len(exp["why_avoid"]) == 3
     assert "factor_score=" in exp["why_buy"][0]
     assert "Confidence is" in exp["confidence_note"]
+
+
+def test_dividend_data_includes_grossed_up_yield_and_risk_flag():
+    res = score_dividends(_base(dividendYield=0.05, payoutRatio=1.05, frankingLevel=1.0))
+    assert res["data"]["grossed_up_yield"] > res["data"]["cash_yield"]
+    assert res["data"]["payout_risk_flag"] == "Unsustainably high payout"
+
+
+def test_asx_defaults_to_fully_franked_when_missing_franking_level():
+    res = score_dividends(_base(symbol="WBC.AX", dividendYield=0.04, payoutRatio=0.6, frankingLevel=None))
+    assert res["data"]["franking_level"] == 100.0

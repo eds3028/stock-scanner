@@ -41,6 +41,9 @@ FACTOR_LABELS = {
     "free_cashflow_positive": "Free cash flow",
     "dividend_yield": "Dividend yield",
     "payout_ratio": "Payout ratio",
+    "payout_coverage": "Payout coverage",
+    "franking_level": "Franking level",
+    "grossed_up_yield": "Grossed-up yield",
     "fcf_cover": "Dividend FCF cover",
     "yield_vs_5y": "Yield vs 5yr",
 }
@@ -261,20 +264,49 @@ def score_health(info: dict, template: dict | None = None) -> dict:
 
 
 def score_dividends(info: dict) -> dict:
-    return _generic_dimension(info, {
-        "dividend_yield": {"value": lambda i: i.get("dividendYield"), "bands": [0.06, 0.03, 0.015], "weight": 0.3},
-        "payout_ratio": {"value": lambda i: i.get("payoutRatio"), "bands": [0.45, 0.7, 0.9], "direction": "low", "weight": 0.3},
+    tax_rate = 0.30
+    dividend_yield = info.get("dividendYield")
+    payout_ratio = info.get("payoutRatio")
+    franking_level = info.get("frankingLevel")
+    if franking_level is None and (info.get("symbol") or "").endswith(".AX"):
+        franking_level = 1.0
+    if franking_level is not None:
+        franking_level = max(0.0, min(1.0, franking_level))
+
+    payout_coverage = None
+    if payout_ratio and payout_ratio > 0:
+        payout_coverage = 1 / payout_ratio
+
+    grossed_up_yield = None
+    if dividend_yield is not None and franking_level is not None:
+        grossed_up_yield = dividend_yield * (1 + (franking_level * tax_rate / (1 - tax_rate)))
+
+    base = _generic_dimension(info, {
+        "dividend_yield": {"value": lambda i: i.get("dividendYield"), "bands": [0.06, 0.03, 0.015], "weight": 0.2},
+        "payout_ratio": {"value": lambda i: i.get("payoutRatio"), "bands": [0.45, 0.7, 0.9], "direction": "low", "weight": 0.2},
+        "payout_coverage": {"value": lambda i: payout_coverage, "bands": [2.0, 1.4, 1.0], "weight": 0.15},
+        "franking_level": {"value": lambda i: franking_level, "bands": [0.9, 0.5, 0.1], "weight": 0.1},
+        "grossed_up_yield": {"value": lambda i: grossed_up_yield, "bands": [0.075, 0.045, 0.02], "weight": 0.1},
         "fcf_cover": {
             "value": lambda i: ((i.get("freeCashflow") or 0) / max(i.get("sharesOutstanding") or 1, 1)) - (i.get("dividendRate") or 0),
             "bands": [1.0, 0.2, 0],
-            "weight": 0.25,
+            "weight": 0.15,
         },
         "yield_vs_5y": {
             "value": lambda i: (i.get("dividendYield") or 0) / max(i.get("fiveYearAvgDividendYield") or 0.0001, 0.0001),
             "bands": [1.2, 1.0, 0.85],
-            "weight": 0.15,
+            "weight": 0.1,
         },
     })
+    base["data"] = {
+        "cash_yield": round(dividend_yield * 100, 2) if dividend_yield is not None else None,
+        "grossed_up_yield": round(grossed_up_yield * 100, 2) if grossed_up_yield is not None else None,
+        "payout_ratio": round(payout_ratio * 100, 1) if payout_ratio is not None else None,
+        "payout_coverage": round(payout_coverage, 2) if payout_coverage is not None else None,
+        "franking_level": round(franking_level * 100, 1) if franking_level is not None else None,
+        "payout_risk_flag": "Unsustainably high payout" if (payout_ratio is not None and payout_ratio >= 1.0) else None,
+    }
+    return base
 
 
 def _confidence(info: dict) -> dict:

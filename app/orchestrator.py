@@ -162,6 +162,7 @@ class DataOrchestrator:
                 ticker TEXT PRIMARY KEY,
                 shares REAL NOT NULL,
                 cost_base REAL,
+                acquired_at TEXT,
                 target_weight REAL DEFAULT 0,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
@@ -211,6 +212,11 @@ class DataOrchestrator:
                 conn.execute(f"ALTER TABLE scan_log ADD COLUMN {col} {coltype}")
             except Exception:
                 pass
+
+        try:
+            conn.execute("ALTER TABLE holdings ADD COLUMN acquired_at TEXT")
+        except Exception:
+            pass
 
         conn.commit()
         conn.close()
