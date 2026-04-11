@@ -60,7 +60,15 @@ class DataOrchestrator:
         unavailable = [p.name for p in self.providers if not p.is_configured()]
         log.info(f"Providers configured: {configured}")
         if unavailable:
-            log.info(f"Providers not configured (missing API keys): {unavailable}")
+            log.info(f"Providers not available (not installed or missing API key): {unavailable}")
+
+        # Pre-mark unconfigured providers as UNAVAILABLE so the fetch loop
+        # skips them immediately on the very first ticker rather than calling
+        # safe_fetch() (which sets UNAVAILABLE lazily after logging "Trying…"
+        # and consuming the 2-second inter-provider sleep).
+        for p in self.providers:
+            if not p.is_configured():
+                p.health.status = ProviderStatus.UNAVAILABLE
 
     def _init_cache_db(self):
         """Initialise the cache database."""

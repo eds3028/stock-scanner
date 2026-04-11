@@ -93,5 +93,12 @@ class YahooQueryProvider(StockDataProvider):
             )
 
         except Exception as e:
+            err = str(e)
+            # 429 / crumb failures signal IP-level rate-limiting.  Escalate the
+            # health counter by 4 extra failures so the circuit breaker opens
+            # much sooner instead of retrying 15 times at ~30 s each.
+            if "429" in err or "crumb" in err.lower() or "too many" in err.lower():
+                for _ in range(4):
+                    self.health.record_failure("rate-limited (escalated)")
             log.warning(f"[yahooquery] Failed for {ticker}: {e}")
             return None
