@@ -33,7 +33,7 @@ class ProviderHealth:
     last_success_at: Optional[float] = None
     last_failure_at: Optional[float] = None
     last_failure_reason: Optional[str] = None
-    cooldown_seconds: int = 300  # 5 minutes before retrying after circuit open
+    cooldown_seconds: int = 120  # 2 minutes before retrying after circuit open
 
     @property
     def success_rate(self) -> float:
@@ -71,12 +71,12 @@ class ProviderHealth:
         self.last_failure_at = time.time()
         self.last_failure_reason = reason
 
-        if self.consecutive_failures >= 5:
+        if self.consecutive_failures >= 15:
             if self.status != ProviderStatus.CIRCUIT_OPEN:
                 log.warning(f"Circuit breaker OPEN for {self.name} after {self.consecutive_failures} failures: {reason}")
                 self.status = ProviderStatus.CIRCUIT_OPEN
                 self.circuit_opened_at = time.time()
-        elif self.consecutive_failures >= 2:
+        elif self.consecutive_failures >= 5:
             self.status = ProviderStatus.DEGRADED
 
 
