@@ -144,7 +144,7 @@ def store_score(conn, ticker: str, score_result: dict, stock_data,
             raw_info, dimension_detail,
             company_name, sector, industry, market_cap, current_price,
             narrative, data_provider, data_completeness, data_fetched_at, scoring_model_version
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         ticker, scan_date,
         score_result["total_score"],

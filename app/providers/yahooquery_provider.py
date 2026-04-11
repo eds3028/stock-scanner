@@ -94,4 +94,4 @@ class YahooQueryProvider(StockDataProvider):
 
         except Exception as e:
             log.warning(f"[yahooquery] Failed for {ticker}: {e}")
-            raise
+            return None

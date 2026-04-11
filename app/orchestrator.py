@@ -22,6 +22,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from providers.base import StockData, ProviderStatus
+from providers.yfinance_provider import YFinanceProvider
 from providers.yahooquery_provider import YahooQueryProvider
 from providers.finnhub_provider import FinnhubProvider
 from providers.fmp_provider import FMPProvider
@@ -49,6 +50,7 @@ class DataOrchestrator:
     def _init_providers(self):
         """Initialise all providers in priority order."""
         self.providers = [
+            YFinanceProvider(),
             YahooQueryProvider(),
             FinnhubProvider(),
             FMPProvider(),
