@@ -290,6 +290,22 @@ def get_db():
 
 
 def get_latest_date(conn):
+    # A partial/crashed scan can leave a new scan_date with very few rows,
+    # which causes MAX(scan_date) to pick that date and hide all prior data.
+    # Use the latest date that has at least half as many stocks as the
+    # best historical scan (minimum floor of 5).
+    max_row = conn.execute(
+        "SELECT MAX(cnt) as mc FROM (SELECT COUNT(*) as cnt FROM scores GROUP BY scan_date)"
+    ).fetchone()
+    max_cnt = (max_row["mc"] if max_row and max_row["mc"] else 0) or 0
+    threshold = max(5, int(max_cnt * 0.5))
+    row = conn.execute(
+        "SELECT scan_date FROM scores GROUP BY scan_date HAVING COUNT(*) >= ? ORDER BY scan_date DESC LIMIT 1",
+        (threshold,)
+    ).fetchone()
+    if row:
+        return row["scan_date"]
+    # Fallback: any date at all (e.g. database has fewer than 5 stocks total)
     row = conn.execute("SELECT MAX(scan_date) as d FROM scores").fetchone()
     return row["d"] if row else None
 
