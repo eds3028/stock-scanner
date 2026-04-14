@@ -150,6 +150,33 @@ def save_rules(conn: sqlite3.Connection, rules: dict[str, float]) -> None:
         )
 
 
+def save_user_preset(conn: sqlite3.Connection, name: str, preset: dict) -> None:
+    import json as _json
+    conn.execute(
+        "INSERT INTO portfolio_config(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (f"preset:{name.strip()}", _json.dumps(preset)),
+    )
+
+
+def load_user_presets(conn: sqlite3.Connection) -> dict[str, dict]:
+    import json as _json
+    rows = conn.execute(
+        "SELECT key, value FROM portfolio_config WHERE key LIKE 'preset:%'"
+    ).fetchall()
+    result = {}
+    for r in rows:
+        name = r["key"][7:]
+        try:
+            result[name] = _json.loads(r["value"])
+        except Exception:
+            pass
+    return result
+
+
+def delete_user_preset(conn: sqlite3.Connection, name: str) -> None:
+    conn.execute("DELETE FROM portfolio_config WHERE key = ?", (f"preset:{name.strip()}",))
+
+
 def holdings_snapshot(conn: sqlite3.Connection, score_rows: list[dict[str, Any]]) -> dict[str, HoldingSnapshot]:
     holdings = {r["ticker"]: dict(r) for r in conn.execute("SELECT ticker, shares, cost_base, acquired_at, target_weight FROM holdings").fetchall()}
     portfolio_value = 0.0

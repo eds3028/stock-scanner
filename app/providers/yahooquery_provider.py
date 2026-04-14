@@ -95,3 +95,65 @@ class YahooQueryProvider(StockDataProvider):
         except Exception as e:
             log.warning(f"[yahooquery] Failed for {ticker}: {e}")
             return None
+
+    def fetch_price_history(self, ticker: str, period: str = "1y") -> list[dict]:
+        """Fetch daily OHLCV bars for the past year."""
+        if not self._import_ok:
+            return []
+        try:
+            stock = self._Ticker(ticker, timeout=15)
+            hist = stock.history(period=period, interval="1d")
+            if hist is None or (hasattr(hist, "empty") and hist.empty):
+                return []
+            bars = []
+            for idx, row in hist.iterrows():
+                try:
+                    date_str = str(idx[1])[:10] if hasattr(idx, "__len__") else str(idx)[:10]
+                    bars.append({
+                        "date": date_str,
+                        "open": float(row.get("open") or 0) or None,
+                        "high": float(row.get("high") or 0) or None,
+                        "low": float(row.get("low") or 0) or None,
+                        "close": float(row.get("close") or 0) or None,
+                        "volume": int(row.get("volume") or 0) or None,
+                    })
+                except Exception:
+                    continue
+            return bars
+        except Exception as e:
+            log.warning(f"[yahooquery] Price history failed for {ticker}: {e}")
+            return []
+
+    def fetch_news(self, ticker: str, limit: int = 15) -> list[dict]:
+        """Fetch recent news headlines."""
+        if not self._import_ok:
+            return []
+        try:
+            stock = self._Ticker(ticker, timeout=15)
+            raw = stock.news(limit)
+            if not raw or not isinstance(raw, list):
+                return []
+            articles = []
+            for item in raw:
+                url = item.get("link") or item.get("url") or ""
+                headline = item.get("title") or item.get("headline") or ""
+                if not headline or not url:
+                    continue
+                pub_ts = item.get("providerPublishTime") or item.get("publishTime")
+                pub_str = None
+                if pub_ts:
+                    try:
+                        from datetime import datetime as _dt
+                        pub_str = _dt.utcfromtimestamp(int(pub_ts)).strftime("%Y-%m-%d %H:%M")
+                    except Exception:
+                        pass
+                articles.append({
+                    "headline": headline,
+                    "source": item.get("publisher") or item.get("source") or "Yahoo Finance",
+                    "url": url,
+                    "published_at": pub_str,
+                })
+            return articles[:limit]
+        except Exception as e:
+            log.warning(f"[yahooquery] News fetch failed for {ticker}: {e}")
+            return []

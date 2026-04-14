@@ -181,6 +181,36 @@ class DataOrchestrator:
             CREATE INDEX IF NOT EXISTS idx_ticker_metrics_run ON ticker_metrics(run_id);
             CREATE INDEX IF NOT EXISTS idx_ticker_metrics_date ON ticker_metrics(scan_date);
             CREATE INDEX IF NOT EXISTS idx_watchlist_items_ticker ON watchlist_items(ticker);
+
+            CREATE TABLE IF NOT EXISTS custom_universe (
+                ticker TEXT PRIMARY KEY,
+                added_at TEXT DEFAULT (datetime('now')),
+                note TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS price_history (
+                ticker TEXT NOT NULL,
+                date TEXT NOT NULL,
+                open REAL,
+                high REAL,
+                low REAL,
+                close REAL,
+                volume INTEGER,
+                PRIMARY KEY (ticker, date)
+            );
+
+            CREATE TABLE IF NOT EXISTS news (
+                ticker TEXT NOT NULL,
+                headline TEXT NOT NULL,
+                source TEXT,
+                url TEXT,
+                published_at TEXT,
+                fetched_at REAL NOT NULL,
+                PRIMARY KEY (ticker, url)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_price_history_ticker ON price_history(ticker);
+            CREATE INDEX IF NOT EXISTS idx_news_ticker ON news(ticker, published_at);
         """)
 
         # Migrate: add columns to scores if they don't exist
@@ -426,3 +456,121 @@ class DataOrchestrator:
         """, (limit,)).fetchall()
         conn.close()
         return [dict(r) for r in rows]
+
+    def fetch_and_store_price_history(self, ticker: str) -> int:
+        """Fetch 12-month OHLCV price history and store in price_history table.
+        Returns number of rows inserted. Skips if already fetched today."""
+        conn = self._get_conn()
+        today_str = date.today().isoformat()
+        existing = conn.execute(
+            "SELECT COUNT(*) as c FROM price_history WHERE ticker = ? AND date = ?",
+            (ticker, today_str)
+        ).fetchone()["c"]
+        conn.close()
+        if existing > 0:
+            return 0
+
+        rows_inserted = 0
+        for provider in self.providers:
+            if not provider.is_configured():
+                continue
+            if not hasattr(provider, "fetch_price_history"):
+                continue
+            try:
+                bars = provider.fetch_price_history(ticker)
+                if not bars:
+                    continue
+                conn = self._get_conn()
+                for bar in bars:
+                    try:
+                        conn.execute("""
+                            INSERT OR REPLACE INTO price_history
+                            (ticker, date, open, high, low, close, volume)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """, (ticker, bar["date"], bar.get("open"), bar.get("high"),
+                              bar.get("low"), bar.get("close"), bar.get("volume")))
+                        rows_inserted += 1
+                    except Exception:
+                        pass
+                conn.commit()
+                conn.close()
+                log.info(f"[{ticker}] Stored {rows_inserted} price history rows")
+                break
+            except Exception as e:
+                log.warning(f"[{ticker}] Price history fetch failed from {provider.name}: {e}")
+        return rows_inserted
+
+    def fetch_and_store_news(self, ticker: str) -> int:
+        """Fetch recent news headlines and store in news table.
+        Returns number of new articles inserted. TTL: 6 hours."""
+        conn = self._get_conn()
+        recent = conn.execute(
+            "SELECT MAX(fetched_at) as t FROM news WHERE ticker = ?", (ticker,)
+        ).fetchone()["t"]
+        conn.close()
+        if recent and (time.time() - recent) < PRICE_TTL:
+            return 0
+
+        articles_inserted = 0
+        for provider in self.providers:
+            if not provider.is_configured():
+                continue
+            if not hasattr(provider, "fetch_news"):
+                continue
+            try:
+                articles = provider.fetch_news(ticker)
+                if not articles:
+                    continue
+                conn = self._get_conn()
+                now = time.time()
+                for article in articles:
+                    url = article.get("url") or ""
+                    headline = article.get("headline") or ""
+                    if not headline or not url:
+                        continue
+                    try:
+                        conn.execute("""
+                            INSERT OR IGNORE INTO news
+                            (ticker, headline, source, url, published_at, fetched_at)
+                            VALUES (?, ?, ?, ?, ?, ?)
+                        """, (ticker, headline, article.get("source"),
+                              url, article.get("published_at"), now))
+                        articles_inserted += conn.total_changes
+                    except Exception:
+                        pass
+                conn.commit()
+                conn.close()
+                log.info(f"[{ticker}] Stored {articles_inserted} news articles")
+                break
+            except Exception as e:
+                log.warning(f"[{ticker}] News fetch failed from {provider.name}: {e}")
+        return articles_inserted
+
+    def get_custom_tickers(self) -> list[str]:
+        """Return tickers added via the UI custom universe."""
+        conn = self._get_conn()
+        rows = conn.execute("SELECT ticker FROM custom_universe ORDER BY added_at").fetchall()
+        conn.close()
+        return [r["ticker"] for r in rows]
+
+    def add_custom_ticker(self, ticker: str, note: str = "") -> bool:
+        """Add a ticker to the custom universe. Returns True if newly added."""
+        ticker = ticker.strip().upper()
+        if not ticker:
+            return False
+        conn = self._get_conn()
+        conn.execute(
+            "INSERT OR IGNORE INTO custom_universe(ticker, note) VALUES(?, ?)",
+            (ticker, note)
+        )
+        changed = conn.total_changes > 0
+        conn.commit()
+        conn.close()
+        return changed
+
+    def remove_custom_ticker(self, ticker: str) -> None:
+        """Remove a ticker from the custom universe."""
+        conn = self._get_conn()
+        conn.execute("DELETE FROM custom_universe WHERE ticker = ?", (ticker.strip().upper(),))
+        conn.commit()
+        conn.close()

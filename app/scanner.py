@@ -205,7 +205,23 @@ def store_ticker_metric(conn, run_id: str, scan_date: str, ticker: str,
 def run_scan(universe_name: Optional[str] = None):
     from scorer import score_stock
 
-    display_name, tickers = get_universe(universe_name)
+    # Allow overriding the ticker list via env var (used by dashboard watchlist scan)
+    scan_tickers_env = os.environ.get("SCAN_TICKERS", "").strip()
+    if scan_tickers_env:
+        tickers = [t.strip().upper() for t in scan_tickers_env.split(",") if t.strip()]
+        display_name = f"Custom ({len(tickers)} tickers)"
+    else:
+        display_name, tickers = get_universe(universe_name)
+        # Merge in any custom tickers added via the UI
+        try:
+            orchestrator_tmp = DataOrchestrator(DB_PATH)
+            custom = orchestrator_tmp.get_custom_tickers()
+            if custom:
+                merged = list(dict.fromkeys(tickers + custom))
+                log.info(f"Merging {len(custom)} custom tickers into universe (total: {len(merged)})")
+                tickers = merged
+        except Exception as e:
+            log.warning(f"Could not load custom tickers: {e}")
     run_logger = ScanRunLogger(universe=display_name, log_dir=DB_PATH.parent)
     run_id = run_logger.run_id
 
@@ -273,6 +289,16 @@ def run_scan(universe_name: Optional[str] = None):
                                 result["total_score"])
             conn.commit()
             scanned += 1
+
+            # Fetch and store price history and news (best-effort, non-blocking)
+            try:
+                orchestrator.fetch_and_store_price_history(ticker)
+            except Exception as e:
+                log.warning(f"Price history fetch failed for {ticker}: {e}")
+            try:
+                orchestrator.fetch_and_store_news(ticker)
+            except Exception as e:
+                log.warning(f"News fetch failed for {ticker}: {e}")
 
         except Exception as e:
             log.error(f"Scoring failed for {ticker}: {e}")

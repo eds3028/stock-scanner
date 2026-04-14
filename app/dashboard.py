@@ -19,12 +19,15 @@ from backtest import run_backtest, forward_bucket_analysis, available_versions, 
 from portfolio import (
     add_watchlist_tickers,
     create_watchlist,
+    delete_user_preset,
     get_watchlists,
     holdings_snapshot,
     import_holdings_csv,
     init_portfolio_tables,
     load_rules,
+    load_user_presets,
     save_rules,
+    save_user_preset,
 )
 
 DB_PATH = Path(os.environ.get("DB_PATH", "/data/stocks.db"))
@@ -549,15 +552,117 @@ def get_cache_stats(conn):
         return {"total": 0, "stale": 0, "fresh": 0}
 
 
+def get_price_history(conn, ticker):
+    try:
+        rows = conn.execute(
+            "SELECT date, open, high, low, close, volume FROM price_history WHERE ticker = ? ORDER BY date ASC",
+            (ticker,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+
+
+def get_news(conn, ticker, limit=15):
+    try:
+        rows = conn.execute(
+            "SELECT headline, source, url, published_at FROM news WHERE ticker = ? ORDER BY published_at DESC LIMIT ?",
+            (ticker, limit)
+        ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+
+
+def get_30day_movers(conn, today, top_n=15):
+    try:
+        from datetime import datetime as _dt, timedelta
+        cutoff = (_dt.fromisoformat(today) - timedelta(days=35)).date().isoformat()
+        rows = conn.execute("""
+            SELECT t.ticker, t.company_name, t.sector,
+                   t.total_score as now_score,
+                   p.total_score as prior_score,
+                   (t.total_score - p.total_score) as change,
+                   p.scan_date as prior_date,
+                   t.current_price,
+                   (t.value_score - p.value_score) as value_change,
+                   (t.future_score - p.future_score) as future_change,
+                   (t.past_score - p.past_score) as past_change,
+                   (t.health_score - p.health_score) as health_change,
+                   (t.dividend_score - p.dividend_score) as dividend_change
+            FROM scores t
+            JOIN scores p ON t.ticker = p.ticker
+            WHERE t.scan_date = ?
+              AND p.scan_date = (
+                  SELECT MAX(s2.scan_date) FROM scores s2
+                  WHERE s2.ticker = t.ticker AND s2.scan_date <= ?
+              )
+              AND t.scan_date != p.scan_date
+            ORDER BY (t.total_score - p.total_score) DESC
+            LIMIT ?
+        """, (today, cutoff, top_n)).fetchall()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+
+
+def get_custom_tickers_db(conn):
+    try:
+        rows = conn.execute("SELECT ticker, note, added_at FROM custom_universe ORDER BY added_at").fetchall()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+
+
+def _is_asx_market_hours() -> bool:
+    """Return True during ASX core trading hours (10am–4:10pm AEST/AEDT Mon–Fri)."""
+    try:
+        import pytz
+        from datetime import time as _time
+        aest = pytz.timezone("Australia/Sydney")
+        now = datetime.now(aest)
+        if now.weekday() >= 5:
+            return False
+        return _time(10, 0) <= now.time() <= _time(16, 10)
+    except Exception:
+        return False
+
+
+def build_shortlist_csv(stocks: list) -> bytes:
+    cols = ["ticker", "company_name", "sector", "industry", "total_score",
+            "value_score", "future_score", "past_score", "health_score",
+            "dividend_score", "current_price", "market_cap",
+            "confidence_badge", "portfolio_status", "data_provider"]
+    rows = []
+    for s in stocks:
+        rows.append({c: s.get(c, "") for c in cols})
+    df = pd.DataFrame(rows)
+    if "ticker" in df.columns:
+        df["ticker"] = df["ticker"].str.replace(".AX", "", regex=False)
+    return df.to_csv(index=False).encode("utf-8")
+
+
 # ── Presets ───────────────────────────────────────────────────────────────────
 
-PRESETS = {
+BUILTIN_PRESETS = {
     "All":          {"min_total": 0,  "min_value": 0, "min_future": 0, "min_past": 0, "min_health": 0, "min_dividend": 0},
     "High quality": {"min_total": 20, "min_value": 3, "min_future": 3, "min_past": 3, "min_health": 4, "min_dividend": 0},
     "Income":       {"min_total": 16, "min_value": 2, "min_future": 0, "min_past": 2, "min_health": 3, "min_dividend": 4},
     "Growth":       {"min_total": 16, "min_value": 0, "min_future": 4, "min_past": 2, "min_health": 2, "min_dividend": 0},
     "Value":        {"min_total": 16, "min_value": 4, "min_future": 0, "min_past": 2, "min_health": 2, "min_dividend": 0},
 }
+PRESETS = dict(BUILTIN_PRESETS)
+
+
+def _reload_presets(conn):
+    """Merge user-saved presets from DB into the global PRESETS dict."""
+    global PRESETS
+    PRESETS = dict(BUILTIN_PRESETS)
+    try:
+        user = load_user_presets(conn)
+        PRESETS.update(user)
+    except Exception:
+        pass
 
 
 def init_state():
@@ -806,11 +911,59 @@ def main():
     today = get_latest_date(conn)
     if not today:
         st.title("📈 ASX Scanner")
-        st.info("Scan in progress — no stocks scored yet. Check back in a few minutes.")
+        st.markdown("### Welcome — no scan data yet")
+        col_l, col_r = st.columns(2)
+        with col_l:
+            st.markdown("**Data providers configured**")
+            st.markdown("✅ YahooQuery (always active — no key needed)")
+            for env_key, label in [
+                ("FINNHUB_API_KEY", "Finnhub"),
+                ("FMP_API_KEY", "FMP"),
+                ("ALPHA_VANTAGE_API_KEY", "Alpha Vantage"),
+                ("OLLAMA_HOST", "AI Narratives (Ollama)"),
+            ]:
+                if os.environ.get(env_key):
+                    st.markdown(f"✅ {label}")
+                else:
+                    st.markdown(f"⚪ {label} *(optional — add key to .env)*")
+        with col_r:
+            st.markdown("**Next steps**")
+            st.markdown("1. Click **Run scanner now** in the sidebar to score stocks")
+            st.markdown("2. The first scan takes ~10–15 min for ASX 200")
+            st.markdown("3. Results appear here automatically when done")
+            st.markdown("4. Optionally add API keys to `.env` for richer data")
+        active_universe = os.environ.get("UNIVERSE", "asx200")
+        try:
+            from universe import get_universe as _gu
+            _, _tickers = _gu()
+            ticker_count = len(_tickers)
+        except Exception:
+            ticker_count = 0
+        st.info(f"Active universe: **{active_universe}** — {ticker_count} tickers will be scanned.")
+        # Still show the sidebar scanner button
+        with st.sidebar:
+            st.markdown('<div class="section-label">Scanner</div>', unsafe_allow_html=True)
+            if st.button("Run scanner now", use_container_width=True):
+                with st.spinner("Running scan — this will take several minutes..."):
+                    run = subprocess.run(
+                        [sys.executable, "scanner.py"],
+                        cwd=Path(__file__).parent,
+                        capture_output=True, text=True, check=False,
+                    )
+                if run.returncode == 0:
+                    st.success("Scan complete!")
+                    st.rerun()
+                else:
+                    st.error("Scan failed.")
+                    if run.stderr:
+                        st.code(run.stderr[-2000:], language="text")
         conn.close()
         return
 
     yesterday = get_previous_date(conn, today)
+
+    # Load user presets into global PRESETS dict
+    _reload_presets(conn)
 
     # Sidebar
     with st.sidebar:
@@ -825,12 +978,37 @@ def main():
         st.divider()
 
         st.markdown('<div class="section-label">Filter Presets</div>', unsafe_allow_html=True)
-        preset = st.radio("Preset", list(PRESETS.keys()),
-                          index=list(PRESETS.keys()).index(st.session_state.get("filter_preset", "All")),
-                          label_visibility="collapsed")
+        preset_names = list(PRESETS.keys())
+        current_preset = st.session_state.get("filter_preset", "All")
+        preset_idx = preset_names.index(current_preset) if current_preset in preset_names else 0
+        preset = st.radio("Preset", preset_names, index=preset_idx, label_visibility="collapsed")
         if preset != st.session_state.get("filter_preset", "All"):
             apply_preset(preset)
             st.rerun()
+
+        with st.expander("Save / manage presets", expanded=False):
+            new_preset_name = st.text_input("Save current filters as", placeholder="e.g. My Income")
+            if st.button("Save preset", use_container_width=True) and new_preset_name.strip():
+                current_filters = {
+                    "min_total": st.session_state.get("min_total", 0),
+                    "min_value": st.session_state.get("min_value", 0),
+                    "min_future": st.session_state.get("min_future", 0),
+                    "min_past": st.session_state.get("min_past", 0),
+                    "min_health": st.session_state.get("min_health", 0),
+                    "min_dividend": st.session_state.get("min_dividend", 0),
+                }
+                save_user_preset(conn, new_preset_name.strip(), current_filters)
+                conn.commit()
+                st.success(f"Saved preset '{new_preset_name.strip()}'")
+                st.rerun()
+            user_preset_names = [k for k in PRESETS if k not in BUILTIN_PRESETS]
+            if user_preset_names:
+                del_preset = st.selectbox("Delete preset", ["—"] + user_preset_names, key="del_preset_sel")
+                if st.button("Delete", use_container_width=True) and del_preset != "—":
+                    delete_user_preset(conn, del_preset)
+                    conn.commit()
+                    st.success(f"Deleted '{del_preset}'")
+                    st.rerun()
 
         st.markdown('<div class="section-label" style="margin-top:8px">Sector</div>', unsafe_allow_html=True)
         sectors = get_sectors_with_count(conn, today)
@@ -859,9 +1037,43 @@ def main():
                 st.rerun()
 
         st.markdown('<div class="section-label" style="margin-top:8px">Scanner</div>', unsafe_allow_html=True)
-        trigger_scan = st.button("Run scanner now", use_container_width=True)
+        # Build scan universe options: built-in universes + watchlists
+        try:
+            from universe import list_universes as _lu
+            _universe_map = {v["name"]: k for k, v in _lu().items()}
+        except Exception:
+            _universe_map = {"ASX 200": "asx200", "ASX 20": "asx20"}
+        _wl_for_scan = get_watchlists(conn)
+        for _wl in _wl_for_scan:
+            _universe_map[f"Watchlist: {_wl['name']}"] = f"watchlist:{_wl['name']}"
+        _scan_universe_labels = list(_universe_map.keys())
+        _scan_universe_choice = st.selectbox("Scan universe", _scan_universe_labels, key="scan_universe_sel")
+        _scan_universe_key = _universe_map.get(_scan_universe_choice, "asx200")
+
+        market_open = _is_asx_market_hours()
+        if market_open:
+            st.warning("ASX is currently open. Data fetched during market hours may be intraday-stale. Nightly scan runs at 8pm AWST.")
+        trigger_scan = st.button(
+            "Run scanner now" + (" (market open)" if market_open else ""),
+            use_container_width=True,
+        )
         if trigger_scan:
             conn.close()
+            scan_env = dict(os.environ)
+            if _scan_universe_key.startswith("watchlist:"):
+                wl_name = _scan_universe_key[len("watchlist:"):]
+                _wl_conn = get_db()
+                if _wl_conn:
+                    _wl_obj = next((w for w in get_watchlists(_wl_conn) if w["name"] == wl_name), None)
+                    if _wl_obj:
+                        _tickers_for_scan = [r["ticker"] for r in _wl_conn.execute(
+                            "SELECT ticker FROM watchlist_items WHERE watchlist_id = ?", (_wl_obj["id"],)
+                        ).fetchall()]
+                        scan_env["SCAN_TICKERS"] = ",".join(_tickers_for_scan)
+                    _wl_conn.close()
+            else:
+                scan_env["UNIVERSE"] = _scan_universe_key
+                scan_env.pop("SCAN_TICKERS", None)
             with st.spinner("Running manual scan. This can take several minutes..."):
                 run = subprocess.run(
                     [sys.executable, "scanner.py"],
@@ -869,6 +1081,7 @@ def main():
                     capture_output=True,
                     text=True,
                     check=False,
+                    env=scan_env,
                 )
             if run.returncode == 0:
                 st.success("Manual scan complete. Refreshing dashboard...")
@@ -879,6 +1092,38 @@ def main():
             if run.stdout:
                 st.code(run.stdout[-3000:], language="text")
             return
+
+        with st.expander("Universe management", expanded=False):
+            st.markdown('<div style="font-size:0.75rem;color:#7a90b5;margin-bottom:6px">Add tickers to scan on top of the active universe</div>', unsafe_allow_html=True)
+            new_ticker_input = st.text_input("Add ticker", placeholder="e.g. XYZ.AX", key="add_ticker_input")
+            if st.button("Add to universe", use_container_width=True) and new_ticker_input.strip():
+                t = new_ticker_input.strip().upper()
+                if not t.endswith(".AX"):
+                    t += ".AX"
+                try:
+                    _orch_tmp = __import__("orchestrator", fromlist=["DataOrchestrator"])
+                    _orch_inst = _orch_tmp.DataOrchestrator(DB_PATH)
+                    added = _orch_inst.add_custom_ticker(t)
+                    if added:
+                        st.success(f"Added {t} — will appear in next scan")
+                    else:
+                        st.info(f"{t} already in custom universe")
+                except Exception as _e:
+                    st.error(f"Failed: {_e}")
+            custom_tickers = get_custom_tickers_db(conn)
+            if custom_tickers:
+                st.markdown(f'<div style="font-size:0.72rem;color:#7a90b5;margin-top:8px">{len(custom_tickers)} custom ticker(s):</div>', unsafe_allow_html=True)
+                for ct in custom_tickers:
+                    c_a, c_b = st.columns([3, 1])
+                    c_a.markdown(f'<span style="font-family:monospace;font-size:0.78rem;color:#9fc0ff">{ct["ticker"]}</span>', unsafe_allow_html=True)
+                    if c_b.button("✕", key=f"rm_ct_{ct['ticker']}"):
+                        try:
+                            _orch_tmp2 = __import__("orchestrator", fromlist=["DataOrchestrator"])
+                            _orch_inst2 = _orch_tmp2.DataOrchestrator(DB_PATH)
+                            _orch_inst2.remove_custom_ticker(ct["ticker"])
+                            st.rerun()
+                        except Exception:
+                            pass
 
         with st.expander("Portfolio tools", expanded=False):
             new_watchlist = st.text_input("Create watchlist", placeholder="e.g. High Conviction")
@@ -891,11 +1136,24 @@ def main():
             if current_watchlists:
                 wl_choice = st.selectbox("Edit watchlist", [w["name"] for w in current_watchlists], index=0)
                 wl = next((w for w in current_watchlists if w["name"] == wl_choice), None)
-                tickers = st.text_input("Add tickers (comma-separated)", placeholder="BHP.AX,CBA.AX")
-                if st.button("Add tickers", use_container_width=True) and wl and tickers.strip():
-                    added = add_watchlist_tickers(conn, wl["id"], tickers.split(","))
+                tickers_input = st.text_input("Add tickers (comma-separated)", placeholder="BHP.AX,CBA.AX")
+                if st.button("Add tickers", use_container_width=True) and wl and tickers_input.strip():
+                    added = add_watchlist_tickers(conn, wl["id"], tickers_input.split(","))
                     conn.commit()
                     st.success(f"Added {added} tickers")
+            _holdings_template = (
+                "ticker,shares,cost_base,target_weight,acquired_at\n"
+                "CBA.AX,100,98.50,0.05,2023-06-15\n"
+                "BHP.AX,50,45.20,0.04,2022-11-01\n"
+            )
+            st.download_button(
+                "Download CSV template",
+                data=_holdings_template.encode(),
+                file_name="holdings_template.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+            st.caption("Columns: ticker (e.g. CBA.AX), shares, cost_base ($/share), target_weight (0.05 = 5%), acquired_at (YYYY-MM-DD, optional)")
             csv_file = st.file_uploader("Import holdings CSV", type=["csv"])
             if csv_file and st.button("Import holdings", use_container_width=True):
                 imported, errors = import_holdings_csv(conn, csv_file.getvalue())
@@ -937,8 +1195,8 @@ def main():
         "watchlist": selected_watchlist,
     }
 
-    tab_discover, tab_movers, tab_detail, tab_validation, tab_health = st.tabs([
-        "🔍 Discover", "📊 Movers", "🔎 Deep Dive", "🧪 Validation", "🩺 Data Health"
+    tab_discover, tab_movers, tab_detail, tab_compare, tab_validation, tab_health = st.tabs([
+        "🔍 Discover", "📊 Movers", "🔎 Deep Dive", "⚖️ Compare", "🧪 Validation", "🩺 Data Health"
     ])
 
     # ── DISCOVER ──────────────────────────────────────────────────────────────
@@ -954,13 +1212,22 @@ def main():
         if not stocks:
             st.info("No stocks match the current filters. Try a different preset or lower the thresholds.")
         else:
-            c1, c2, c3, c4 = st.columns(4)
+            c1, c2, c3, c4, c5 = st.columns([1, 1, 1, 1, 1.4])
             scores_list = [s["total_score"] for s in stocks]
             c1.metric("Shown", len(stocks))
             c2.metric("Avg score", f"{sum(scores_list)/len(scores_list):.1f}/30")
             c3.metric("Top score", f"{max(scores_list)}/30")
             top = sorted(stocks, key=lambda x: x["health_score"], reverse=True)[0]
             c4.metric("Healthiest balance sheet", top["ticker"].replace(".AX", ""))
+            with c5:
+                _preset_label = st.session_state.get("filter_preset", "all").lower().replace(" ", "_")
+                st.download_button(
+                    f"Export {len(stocks)} stocks as CSV",
+                    data=build_shortlist_csv(stocks),
+                    file_name=f"asx_shortlist_{today}_{_preset_label}.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )
             st.divider()
 
             cols_per_row = 3
@@ -1063,6 +1330,50 @@ def main():
                     </div>
                     """, unsafe_allow_html=True)
 
+        st.divider()
+        st.markdown("#### Most improved over the last 30 days")
+        movers_30d = get_30day_movers(conn, today, top_n=15)
+        if not movers_30d:
+            st.info("Need scans from ~35 days ago to compute 30-day trend. Keep running nightly scans!")
+        else:
+            col_30_up, col_30_dn = st.columns(2)
+            improving_30d = [m for m in movers_30d if (m.get("change") or 0) > 0][:8]
+            declining_30d = sorted([m for m in movers_30d if (m.get("change") or 0) < 0], key=lambda x: x.get("change", 0))[:8]
+            with col_30_up:
+                st.markdown("##### ⬆️ Biggest improvers")
+                if not improving_30d:
+                    st.caption("No stocks improved significantly over 30 days.")
+                for m in improving_30d:
+                    t = m["ticker"].replace(".AX", "")
+                    chg = m.get("change") or 0
+                    st.markdown(f"""
+                    <div class="fin-card">
+                      <div style="display:flex;justify-content:space-between;align-items:center">
+                        <span style="font-family:monospace;font-size:0.78rem;color:#9fc0ff">{t}</span>
+                        <span style="color:#00d68f;font-weight:700">+{chg:.0f} ▲</span>
+                      </div>
+                      <div style="color:#e8edf5;margin-top:2px;font-size:0.85rem">{m['company_name']}</div>
+                      <div style="color:#7a90b5;font-size:0.76rem;margin-top:2px">{m['now_score']}/30 (was {m['prior_score']}) · {major_change_text(m)}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+            with col_30_dn:
+                st.markdown("##### ⬇️ Biggest decliners")
+                if not declining_30d:
+                    st.caption("No stocks declined significantly over 30 days.")
+                for m in declining_30d:
+                    t = m["ticker"].replace(".AX", "")
+                    chg = m.get("change") or 0
+                    st.markdown(f"""
+                    <div class="fin-card">
+                      <div style="display:flex;justify-content:space-between;align-items:center">
+                        <span style="font-family:monospace;font-size:0.78rem;color:#9fc0ff">{t}</span>
+                        <span style="color:#ff4d6a;font-weight:700">{chg:.0f} ▼</span>
+                      </div>
+                      <div style="color:#e8edf5;margin-top:2px;font-size:0.85rem">{m['company_name']}</div>
+                      <div style="color:#7a90b5;font-size:0.76rem;margin-top:2px">{m['now_score']}/30 (was {m['prior_score']}) · {major_change_text(m)}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
     # ── DEEP DIVE ─────────────────────────────────────────────────────────────
     with tab_detail:
         st.markdown("### Deep dive")
@@ -1127,6 +1438,27 @@ def main():
                     m2.metric("Market Cap", fmt_market_cap(row.get("market_cap")))
                     m3.metric("Confidence", f"{conf_badge} ({conf_score:.0f}%)")
                     m4.metric("Adj Score", f"{(row.get('adjusted_total') or 0):.1f}/100")
+
+                    # Confidence breakdown
+                    _conf_detail = {}
+                    try:
+                        _conf_detail = json.loads(row.get("confidence_detail") or "{}")
+                    except Exception:
+                        pass
+                    _conf_components = _conf_detail.get("components", {})
+                    if _conf_components:
+                        with st.expander(f"Confidence breakdown: {conf_badge} ({conf_score:.0f}%)", expanded=False):
+                            _freshness = _conf_components.get("freshness", _conf_detail.get("freshness", 0))
+                            _completeness = _conf_components.get("completeness", _conf_detail.get("completeness", 0))
+                            _provenance = _conf_components.get("provenance", _conf_detail.get("provenance", 0))
+                            _age_h = _conf_components.get("age_hours", _conf_detail.get("age_hours", 999))
+                            st.markdown(
+                                f"**Data age:** {_age_h:.0f}h old → freshness {_freshness:.0%}  \n"
+                                f"**Field completeness:** {_completeness:.0%} of expected fields present  \n"
+                                f"**Provider reliability:** {_provenance:.0%}  \n"
+                                f"*Formula: 35% freshness + 45% completeness + 20% provenance. "
+                                f"Low confidence can reduce the adjusted score by up to 20 points.*"
+                            )
                     p = apply_portfolio_overlay(conn2, [row], {"ownership": "All", "portfolio_status": "All", "watchlist": "All watchlists"})
                     if p:
                         prow = p[0]
@@ -1156,6 +1488,57 @@ def main():
                         f'<div style="display:flex;justify-content:center;align-items:center;padding:10px 0">{snowflake_svg_detail}</div>',
                         unsafe_allow_html=True
                     )
+
+                # Decision guidance panel
+                _score = row["total_score"]
+                _health_s = row.get("health_score", 0)
+                _div_s = row.get("dividend_score", 0)
+                _p_row = apply_portfolio_overlay(conn2, [row], {"ownership": "All", "portfolio_status": "All", "watchlist": "All watchlists"})
+                _is_owned = bool(_p_row and _p_row[0].get("owned"))
+                _status = (_p_row[0].get("portfolio_status", "New")) if _p_row else "New"
+                _history_quick = get_stock_history(conn2, selected_ticker)
+                _delta_90 = None
+                if len(_history_quick) >= 2:
+                    from datetime import timedelta as _td
+                    _today_dt = datetime.fromisoformat(today)
+                    _cutoff_90 = (_today_dt - _td(days=90)).date().isoformat()
+                    _prior_90 = [h for h in _history_quick if h["scan_date"] <= _cutoff_90]
+                    if _prior_90:
+                        _delta_90 = _history_quick[-1]["total_score"] - _prior_90[-1]["total_score"]
+                _guidance_msg = ""
+                _guidance_type = "info"
+                if _score >= 20 and (_delta_90 is None or _delta_90 >= -2):
+                    _guidance_msg = "**Strong position.** This stock scores well across multiple dimensions. If you don't own it, it warrants research as a potential buy. If you own it, it supports holding or cautious accumulation."
+                    _guidance_type = "success"
+                elif _score >= 20 and _delta_90 is not None and _delta_90 < -2:
+                    _guidance_msg = "**High score but declining trend.** Worth monitoring closely — check which dimension is falling in the Score History section below."
+                    _guidance_type = "warning"
+                elif _score >= 14 and (_delta_90 is None or _delta_90 >= 0):
+                    _guidance_msg = "**Solid but not exceptional.** A reasonable hold if you own it. For new positions, consider waiting for the score to improve before committing."
+                    _guidance_type = "info"
+                elif _score >= 14 and _delta_90 is not None and _delta_90 > 2:
+                    _guidance_msg = "**Improving momentum.** Score is climbing — consider adding to your watchlist and tracking over the next few scans before acting."
+                    _guidance_type = "info"
+                elif _score < 14 and _is_owned:
+                    _guidance_msg = "**Below conviction threshold.** Review whether the investment thesis still holds. If nothing has changed fundamentally, a trim or exit may be appropriate."
+                    _guidance_type = "warning"
+                elif _score < 14:
+                    _guidance_msg = "**Below conviction threshold.** This stock scores in the speculative range. Avoid initiating new positions unless you have strong conviction from your own research."
+                    _guidance_type = "warning"
+                if _health_s <= 1:
+                    _guidance_msg += " ⚠️ **Balance sheet risk** — health score is critically low. High caution warranted regardless of other scores."
+                    _guidance_type = "warning"
+                if _status == "Trim Candidate":
+                    _guidance_msg += " Portfolio rules flag this as a **trim candidate** (overweight vs target)."
+                if _status == "Review Later (Tax)":
+                    _guidance_msg += " ⏳ Approaching 12-month CGT discount — consider waiting before trimming."
+                if _guidance_msg:
+                    if _guidance_type == "success":
+                        st.success(_guidance_msg)
+                    elif _guidance_type == "warning":
+                        st.warning(_guidance_msg)
+                    else:
+                        st.info(_guidance_msg)
 
                 st.divider()
 
@@ -1220,6 +1603,39 @@ def main():
                                     else:
                                         display = str(v)
                                     d_cols[i % n_cols].metric(lbl, display)
+
+                # Fundamentals expander — hidden fields that are fetched but not scored
+                try:
+                    _raw = json.loads(row.get("raw_info") or "{}")
+                    _fund_fields = [
+                        ("Beta (52w)", _raw.get("beta"), None),
+                        ("52w Low", _raw.get("fiftyTwoWeekLow"), "$"),
+                        ("52w High", _raw.get("fiftyTwoWeekHigh"), "$"),
+                        ("Total Revenue", _raw.get("totalRevenue"), "cap"),
+                        ("EBITDA", _raw.get("ebitda"), "cap"),
+                        ("Operating Cash Flow", _raw.get("operatingCashflow"), "cap"),
+                        ("Interest Expense", _raw.get("interestExpense"), "cap"),
+                        ("Trailing EPS", _raw.get("trailingEps"), "$"),
+                        ("Forward EPS", _raw.get("forwardEps"), "$"),
+                        ("Shares Outstanding", _raw.get("sharesOutstanding"), "cap"),
+                    ]
+                    _fund_available = [(lbl, val, fmt) for lbl, val, fmt in _fund_fields if val is not None]
+                    if _fund_available:
+                        with st.expander("📋 Additional fundamentals", expanded=False):
+                            _ncols = min(4, len(_fund_available))
+                            _fcols = st.columns(_ncols)
+                            for _fi, (lbl, val, fmt) in enumerate(_fund_available):
+                                if fmt == "cap":
+                                    disp = fmt_market_cap(val)
+                                elif fmt == "$":
+                                    disp = f"${val:.2f}"
+                                elif isinstance(val, float):
+                                    disp = f"{val:.3f}"
+                                else:
+                                    disp = str(val)
+                                _fcols[_fi % _ncols].metric(lbl, disp)
+                except Exception:
+                    pass
 
                 st.divider()
                 st.markdown("#### Score history")
@@ -1301,7 +1717,170 @@ def main():
                 else:
                     st.caption("Narrative will be generated on next scan.")
 
+                # Price history chart
+                price_hist = get_price_history(conn2, selected_ticker)
+                if price_hist:
+                    st.divider()
+                    st.markdown("#### Price history (12 months)")
+                    _ph_df = pd.DataFrame(price_hist)
+                    _has_ohlc = all(c in _ph_df.columns and _ph_df[c].notna().any() for c in ["open", "high", "low", "close"])
+                    _fig_price = go.Figure()
+                    if _has_ohlc:
+                        _fig_price.add_trace(go.Candlestick(
+                            x=_ph_df["date"],
+                            open=_ph_df["open"], high=_ph_df["high"],
+                            low=_ph_df["low"], close=_ph_df["close"],
+                            name="Price",
+                            increasing_line_color="#00d68f", decreasing_line_color="#ff4d6a",
+                        ))
+                    else:
+                        _fig_price.add_trace(go.Scatter(
+                            x=_ph_df["date"], y=_ph_df["close"],
+                            mode="lines", line=dict(color="#3b7dff", width=1.5),
+                            name="Close",
+                        ))
+                    _fig_price.update_layout(
+                        paper_bgcolor="#070d1f", plot_bgcolor="#0f1629",
+                        font=dict(color="#e8edf5"),
+                        xaxis=dict(gridcolor="#1e2d4a", linecolor="#1e2d4a",
+                                   tickfont=dict(size=10, color="#7a90b5"), rangeslider_visible=False),
+                        yaxis=dict(gridcolor="#1e2d4a", linecolor="#1e2d4a",
+                                   tickfont=dict(size=10, color="#7a90b5"), tickprefix="$"),
+                        margin=dict(l=10, r=10, t=10, b=10), height=260, showlegend=False,
+                    )
+                    st.plotly_chart(_fig_price, use_container_width=True, key=f"price_hist_{selected_ticker}")
+                    if "volume" in _ph_df.columns and _ph_df["volume"].notna().any():
+                        _fig_vol = go.Figure()
+                        _fig_vol.add_trace(go.Bar(
+                            x=_ph_df["date"], y=_ph_df["volume"],
+                            marker_color="#3b7dff", opacity=0.5, name="Volume",
+                        ))
+                        _fig_vol.update_layout(
+                            paper_bgcolor="#070d1f", plot_bgcolor="#0f1629",
+                            font=dict(color="#e8edf5"),
+                            xaxis=dict(gridcolor="#1e2d4a", linecolor="#1e2d4a",
+                                       tickfont=dict(size=9, color="#7a90b5")),
+                            yaxis=dict(gridcolor="#1e2d4a", linecolor="#1e2d4a",
+                                       tickfont=dict(size=9, color="#7a90b5")),
+                            margin=dict(l=10, r=10, t=4, b=10), height=100, showlegend=False,
+                        )
+                        st.plotly_chart(_fig_vol, use_container_width=True, key=f"vol_hist_{selected_ticker}")
+                else:
+                    st.caption("Price history will populate after the next scan.")
+
+                # News feed
+                news_items = get_news(conn2, selected_ticker)
+                if news_items:
+                    st.divider()
+                    with st.expander(f"📰 Recent news ({len(news_items)} articles)", expanded=False):
+                        for _art in news_items:
+                            _pub = _art.get("published_at") or ""
+                            _src = _art.get("source") or "Unknown"
+                            _url = _art.get("url") or "#"
+                            _hl = _art.get("headline") or ""
+                            st.markdown(
+                                f'<div style="margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid #1e2d4a">'
+                                f'<a href="{_url}" target="_blank" style="color:#9fc0ff;font-size:0.88rem;text-decoration:none;">{_hl}</a>'
+                                f'<div style="color:#4a5d7a;font-size:0.72rem;margin-top:3px">{_src} · {_pub}</div>'
+                                f'</div>',
+                                unsafe_allow_html=True,
+                            )
+                else:
+                    st.caption("News will populate after the next scan.")
+
             conn2.close()
+
+    # ── COMPARE ───────────────────────────────────────────────────────────────
+    with tab_compare:
+        st.markdown("### Compare two stocks side-by-side")
+        _all_tickers_cmp = conn.execute(
+            "SELECT DISTINCT ticker, company_name FROM scores WHERE scan_date = ? ORDER BY ticker",
+            (today,)
+        ).fetchall()
+        if len(_all_tickers_cmp) < 2:
+            st.info("Need at least two stocks scored to compare.")
+        else:
+            _cmp_opts = {f"{r['ticker'].replace('.AX','')} — {r['company_name']}": r['ticker'] for r in _all_tickers_cmp}
+            _cmp_keys = list(_cmp_opts.keys())
+            _ca, _cb = st.columns(2)
+            with _ca:
+                _label_a = st.selectbox("Stock A", _cmp_keys, index=0, key="cmp_a")
+            with _cb:
+                _label_b = st.selectbox("Stock B", _cmp_keys, index=min(1, len(_cmp_keys)-1), key="cmp_b")
+            _ticker_a = _cmp_opts[_label_a]
+            _ticker_b = _cmp_opts[_label_b]
+            _row_a = dict(conn.execute("SELECT * FROM scores WHERE ticker=? AND scan_date=?", (_ticker_a, today)).fetchone() or {})
+            _row_b = dict(conn.execute("SELECT * FROM scores WHERE ticker=? AND scan_date=?", (_ticker_b, today)).fetchone() or {})
+
+            if _row_a and _row_b:
+                _dims = ["value_score", "future_score", "past_score", "health_score", "dividend_score"]
+                _dim_labels = ["Value", "Future", "Past", "Health", "Dividends"]
+
+                # Snowflakes side by side
+                col_sf_a, col_sf_b = st.columns(2)
+                with col_sf_a:
+                    st.markdown(f"#### {_ticker_a.replace('.AX','')} — {_row_a.get('company_name','')}")
+                    _snow_a = svg_snowflake([_row_a.get(d, 0) for d in _dims], size=220)
+                    st.markdown(f'<div style="display:flex;justify-content:center">{_snow_a}</div>', unsafe_allow_html=True)
+                    _tot_a = _row_a.get("total_score", 0)
+                    _col_a = total_color(_tot_a)
+                    st.markdown(f'<div style="text-align:center;font-size:2rem;font-weight:800;color:{_col_a};font-family:monospace">{_tot_a}<span style="font-size:0.9rem;color:#5e7291">/30</span></div>', unsafe_allow_html=True)
+                    st.markdown(f'<div style="text-align:center;color:#7a90b5;font-size:0.78rem">{score_band(_tot_a)}</div>', unsafe_allow_html=True)
+                with col_sf_b:
+                    st.markdown(f"#### {_ticker_b.replace('.AX','')} — {_row_b.get('company_name','')}")
+                    _snow_b = svg_snowflake([_row_b.get(d, 0) for d in _dims], size=220)
+                    st.markdown(f'<div style="display:flex;justify-content:center">{_snow_b}</div>', unsafe_allow_html=True)
+                    _tot_b = _row_b.get("total_score", 0)
+                    _col_b = total_color(_tot_b)
+                    st.markdown(f'<div style="text-align:center;font-size:2rem;font-weight:800;color:{_col_b};font-family:monospace">{_tot_b}<span style="font-size:0.9rem;color:#5e7291">/30</span></div>', unsafe_allow_html=True)
+                    st.markdown(f'<div style="text-align:center;color:#7a90b5;font-size:0.78rem">{score_band(_tot_b)}</div>', unsafe_allow_html=True)
+
+                st.divider()
+                # Dimension comparison table
+                st.markdown("#### Dimension breakdown")
+                _cmp_rows = []
+                for _dk, _dl in zip(_dims, _dim_labels):
+                    _va = _row_a.get(_dk, 0)
+                    _vb = _row_b.get(_dk, 0)
+                    _delta = _va - _vb
+                    _winner = _ticker_a.replace(".AX","") if _delta > 0 else (_ticker_b.replace(".AX","") if _delta < 0 else "Tied")
+                    _cmp_rows.append({
+                        "Dimension": _dl,
+                        _ticker_a.replace(".AX",""): f"{_va}/6",
+                        _ticker_b.replace(".AX",""): f"{_vb}/6",
+                        "Δ (A−B)": f"{_delta:+d}",
+                        "Edge": _winner,
+                    })
+                _cmp_df = pd.DataFrame(_cmp_rows)
+                st.dataframe(_cmp_df, use_container_width=True, hide_index=True)
+
+                # Key metrics comparison
+                st.markdown("#### Key metrics")
+                _kmet_a, _kmet_b = st.columns(2)
+                with _kmet_a:
+                    _raw_a = {}
+                    try:
+                        _raw_a = json.loads(_row_a.get("raw_info") or "{}")
+                    except Exception:
+                        pass
+                    _pa = _row_a.get("current_price")
+                    st.metric("Price", f"${_pa:.2f}" if _pa else "—")
+                    st.metric("Market Cap", fmt_market_cap(_row_a.get("market_cap")))
+                    st.metric("Sector", _row_a.get("sector") or "—")
+                    st.metric("P/E", f"{_raw_a.get('trailingPE'):.1f}x" if _raw_a.get('trailingPE') else "—")
+                    st.metric("Div Yield", f"{(_raw_a.get('dividendYield') or 0)*100:.2f}%" if _raw_a.get('dividendYield') else "—")
+                with _kmet_b:
+                    _raw_b = {}
+                    try:
+                        _raw_b = json.loads(_row_b.get("raw_info") or "{}")
+                    except Exception:
+                        pass
+                    _pb = _row_b.get("current_price")
+                    st.metric("Price", f"${_pb:.2f}" if _pb else "—")
+                    st.metric("Market Cap", fmt_market_cap(_row_b.get("market_cap")))
+                    st.metric("Sector", _row_b.get("sector") or "—")
+                    st.metric("P/E", f"{_raw_b.get('trailingPE'):.1f}x" if _raw_b.get('trailingPE') else "—")
+                    st.metric("Div Yield", f"{(_raw_b.get('dividendYield') or 0)*100:.2f}%" if _raw_b.get('dividendYield') else "—")
 
     # ── VALIDATION ───────────────────────────────────────────────────────────
     with tab_validation:
