@@ -40,7 +40,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build Docker image
-        run: docker build ./app --tag stock-scanner:ci
+        run: docker build . -f app/Dockerfile --tag stock-scanner:ci
 
   secret-scan:
     name: Secret Scan
