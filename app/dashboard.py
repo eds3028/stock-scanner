@@ -284,6 +284,7 @@ def get_db():
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         init_portfolio_tables(conn)
+        init_custom_tickers_table(conn)
         return conn
     except Exception:
         return None
@@ -563,6 +564,246 @@ def get_cache_stats(conn):
         return {"total": total, "stale": stale, "fresh": total - stale}
     except Exception:
         return {"total": 0, "stale": 0, "fresh": 0}
+
+
+# ── Custom tickers (scanner universe additions) ───────────────────────────────
+
+def init_custom_tickers_table(conn):
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS custom_tickers (
+            ticker TEXT PRIMARY KEY,
+            added_at TEXT DEFAULT (datetime('now'))
+        )
+    """)
+    conn.commit()
+
+
+def get_custom_tickers(conn) -> list:
+    try:
+        rows = conn.execute("SELECT ticker FROM custom_tickers ORDER BY ticker").fetchall()
+        return [r["ticker"] for r in rows]
+    except Exception:
+        return []
+
+
+def add_custom_tickers(conn, raw: str) -> tuple:
+    added, skipped = [], []
+    for part in raw.split(","):
+        t = part.strip().upper()
+        if not t:
+            continue
+        if not t.endswith(".AX"):
+            t = t + ".AX"
+        try:
+            cur = conn.execute("INSERT OR IGNORE INTO custom_tickers (ticker) VALUES (?)", (t,))
+            if cur.rowcount:
+                added.append(t)
+            else:
+                skipped.append(t)
+        except Exception:
+            skipped.append(t)
+    conn.commit()
+    return added, skipped
+
+
+def remove_custom_ticker(conn, ticker: str):
+    conn.execute("DELETE FROM custom_tickers WHERE ticker = ?", (ticker,))
+    conn.commit()
+
+
+# ── Price history (live yfinance, cached 1h) ──────────────────────────────────
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_price_history_cached(ticker: str) -> dict:
+    """Returns {"dates": [...], "closes": [...]} or empty dict on failure."""
+    try:
+        import yfinance as yf
+        hist = yf.Ticker(ticker).history(period="1y")
+        if hist.empty:
+            return {}
+        hist = hist.reset_index()
+        return {
+            "dates": [str(d.date()) for d in hist["Date"]],
+            "closes": [round(float(c), 3) if c == c else None for c in hist["Close"]],
+        }
+    except Exception:
+        return {}
+
+
+def make_price_chart(price_data: dict, target: float, target_low: float,
+                     target_high: float, ticker_label: str) -> "go.Figure | None":
+    if not price_data or not price_data.get("closes"):
+        return None
+    dates = price_data["dates"]
+    closes = price_data["closes"]
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=dates, y=closes, name="Price",
+        line=dict(color="#3b7dff", width=2),
+        fill="tozeroy", fillcolor="rgba(59,125,255,0.07)",
+    ))
+    if target_high and target_low:
+        fig.add_trace(go.Scatter(
+            x=dates + dates[::-1],
+            y=[target_high] * len(dates) + [target_low] * len(dates),
+            fill="toself", fillcolor="rgba(0,214,143,0.07)",
+            line=dict(color="rgba(0,0,0,0)"), name="Analyst range", showlegend=True,
+        ))
+    if target:
+        fig.add_hline(y=target, line_dash="dash", line_color="#00d68f", line_width=1.5,
+                      annotation_text=f"  ${target:.2f} target", annotation_font_color="#00d68f",
+                      annotation_position="top left")
+    fig.update_layout(
+        template="plotly_dark", height=270, paper_bgcolor="#0c1324",
+        plot_bgcolor="#0c1324", margin=dict(l=0, r=10, t=10, b=10),
+        xaxis=dict(gridcolor="#1a2540", showgrid=True),
+        yaxis=dict(gridcolor="#1a2540", tickprefix="$"),
+        legend=dict(orientation="h", y=1.08, font_size=11),
+    )
+    return fig
+
+
+# ── Financial metrics snapshot (Simply Wall St style) ────────────────────────
+
+def _pct(v):
+    return f"{v*100:.1f}%" if v is not None else "—"
+
+def _ratio(v, suffix="x", decimals=2):
+    return f"{v:.{decimals}f}{suffix}" if v is not None else "—"
+
+def _cap(v):
+    if v is None: return "—"
+    if abs(v) >= 1e9: return f"${v/1e9:.1f}B"
+    if abs(v) >= 1e6: return f"${v/1e6:.0f}M"
+    return f"${v:,.0f}"
+
+def _metric_card(label: str, value: str, good: bool = None):
+    if good is True:
+        val_color = "#00d68f"
+    elif good is False:
+        val_color = "#ff4d6a"
+    else:
+        val_color = "#e8edf5"
+    return (
+        f'<div style="background:#0c1324;border:1px solid #1a2540;border-radius:10px;'
+        f'padding:10px 12px;margin:4px 0;">'
+        f'<div style="color:#4a5d7a;font-size:0.68rem;margin-bottom:3px">{label}</div>'
+        f'<div style="color:{val_color};font-family:monospace;font-size:1.0rem;font-weight:600">{value}</div>'
+        f'</div>'
+    )
+
+def render_financial_snapshot(raw: dict, row: dict):
+    """Display financial metrics organized into sections, sourced from raw_info."""
+    price = raw.get("currentPrice") or raw.get("regularMarketPrice") or row.get("current_price")
+    target = raw.get("targetMeanPrice")
+    target_low = raw.get("targetLowPrice")
+    target_high = raw.get("targetHighPrice")
+    n_analysts = raw.get("numberOfAnalystOpinions") or 0
+    w52_high = raw.get("fiftyTwoWeekHigh")
+    w52_low = raw.get("fiftyTwoWeekLow")
+
+    # Upside calculation
+    upside_str = "—"
+    if price and target:
+        up = ((target - price) / price) * 100
+        upside_str = f"{up:+.1f}%"
+
+    # Section header style
+    sec = '<div style="font-size:0.7rem;font-weight:700;color:#4a5d7a;letter-spacing:0.08em;margin:12px 0 4px">%s</div>'
+
+    # ── Valuation ──
+    st.markdown(sec % "VALUATION", unsafe_allow_html=True)
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    with c1:
+        analyst_note = f"({n_analysts} analysts)" if n_analysts else ""
+        st.markdown(_metric_card("Analyst Target", f"${target:.2f} {analyst_note}" if target else "—"), unsafe_allow_html=True)
+    with c2:
+        good_up = (((target or 0) - (price or 0)) / max(price or 1, 1) * 100) > 15 if (target and price) else None
+        st.markdown(_metric_card("Upside / Downside", upside_str, good=good_up), unsafe_allow_html=True)
+    with c3:
+        pe = raw.get("trailingPE")
+        st.markdown(_metric_card("P/E (TTM)", _ratio(pe)), unsafe_allow_html=True)
+    with c4:
+        fpe = raw.get("forwardPE")
+        st.markdown(_metric_card("Fwd P/E", _ratio(fpe)), unsafe_allow_html=True)
+    with c5:
+        ev_eb = raw.get("enterpriseToEbitda")
+        st.markdown(_metric_card("EV/EBITDA", _ratio(ev_eb)), unsafe_allow_html=True)
+    with c6:
+        pb = raw.get("priceToBook")
+        st.markdown(_metric_card("Price/Book", _ratio(pb)), unsafe_allow_html=True)
+
+    # 52-week range bar
+    if price and w52_high and w52_low and w52_high > w52_low:
+        pos = min(max((price - w52_low) / (w52_high - w52_low), 0), 1)
+        st.markdown(
+            f'<div style="margin:6px 0 0">'
+            f'<div style="display:flex;justify-content:space-between;font-size:0.68rem;color:#4a5d7a">'
+            f'<span>52w Low ${w52_low:.2f}</span><span>52w High ${w52_high:.2f}</span></div>'
+            f'<div style="background:#1a2540;border-radius:4px;height:6px;margin-top:3px;position:relative">'
+            f'<div style="background:#3b7dff;border-radius:4px;height:6px;width:{pos*100:.1f}%"></div>'
+            f'<div style="position:absolute;top:-2px;left:{pos*100:.1f}%;width:10px;height:10px;'
+            f'background:#e8edf5;border-radius:50%;transform:translateX(-50%)"></div>'
+            f'</div></div>',
+            unsafe_allow_html=True,
+        )
+
+    # ── Profitability ──
+    st.markdown(sec % "PROFITABILITY", unsafe_allow_html=True)
+    p1, p2, p3, p4, p5 = st.columns(5)
+    gm = raw.get("grossMargins")
+    om = raw.get("operatingMargins")
+    nm = raw.get("profitMargins")
+    roe = raw.get("returnOnEquity")
+    roa = raw.get("returnOnAssets")
+    with p1: st.markdown(_metric_card("Gross Margin", _pct(gm), good=(gm or 0) > 0.30), unsafe_allow_html=True)
+    with p2: st.markdown(_metric_card("Op Margin", _pct(om), good=(om or 0) > 0.10), unsafe_allow_html=True)
+    with p3: st.markdown(_metric_card("Net Margin", _pct(nm), good=(nm or 0) > 0.05), unsafe_allow_html=True)
+    with p4: st.markdown(_metric_card("ROE", _pct(roe), good=(roe or 0) > 0.15), unsafe_allow_html=True)
+    with p5: st.markdown(_metric_card("ROA", _pct(roa), good=(roa or 0) > 0.05), unsafe_allow_html=True)
+
+    # ── Growth ──
+    st.markdown(sec % "GROWTH", unsafe_allow_html=True)
+    g1, g2, g3, g4 = st.columns(4)
+    rg = raw.get("revenueGrowth")
+    eg = raw.get("earningsGrowth")
+    eps_t = raw.get("trailingEps")
+    eps_f = raw.get("forwardEps")
+    with g1: st.markdown(_metric_card("Revenue Growth", _pct(rg), good=(rg or 0) > 0.05), unsafe_allow_html=True)
+    with g2: st.markdown(_metric_card("Earnings Growth", _pct(eg), good=(eg or 0) > 0.05), unsafe_allow_html=True)
+    with g3: st.markdown(_metric_card("EPS (TTM)", f"${eps_t:.2f}" if eps_t else "—"), unsafe_allow_html=True)
+    with g4: st.markdown(_metric_card("EPS (Fwd)", f"${eps_f:.2f}" if eps_f else "—"), unsafe_allow_html=True)
+
+    # ── Financial Health ──
+    st.markdown(sec % "FINANCIAL HEALTH", unsafe_allow_html=True)
+    h1, h2, h3, h4, h5 = st.columns(5)
+    cr = raw.get("currentRatio")
+    qr = raw.get("quickRatio")
+    de = raw.get("debtToEquity")
+    cash = raw.get("totalCash")
+    debt = raw.get("totalDebt")
+    fcf = raw.get("freeCashflow")
+    net_cash = ((cash or 0) - (debt or 0)) if (cash is not None or debt is not None) else None
+    with h1: st.markdown(_metric_card("Current Ratio", _ratio(cr), good=(cr or 0) > 1.0), unsafe_allow_html=True)
+    with h2: st.markdown(_metric_card("Quick Ratio", _ratio(qr), good=(qr or 0) > 0.8), unsafe_allow_html=True)
+    with h3:
+        de_norm = (de / 100) if de else None  # yfinance returns D/E as percentage
+        st.markdown(_metric_card("Debt/Equity", _ratio(de_norm), good=(de_norm or 99) < 1.0), unsafe_allow_html=True)
+    with h4: st.markdown(_metric_card("Net Cash/(Debt)", _cap(net_cash), good=(net_cash or -1) > 0), unsafe_allow_html=True)
+    with h5: st.markdown(_metric_card("Free Cash Flow", _cap(fcf), good=(fcf or -1) > 0), unsafe_allow_html=True)
+
+    # ── Dividends (only if paying) ──
+    div_yield = raw.get("dividendYield")
+    div_rate = raw.get("dividendRate")
+    if div_yield or div_rate:
+        st.markdown(sec % "DIVIDENDS", unsafe_allow_html=True)
+        dv1, dv2, dv3, dv4 = st.columns(4)
+        payout = raw.get("payoutRatio")
+        avg5y = raw.get("fiveYearAvgDividendYield")
+        with dv1: st.markdown(_metric_card("Yield", _pct(div_yield), good=(div_yield or 0) > 0.02), unsafe_allow_html=True)
+        with dv2: st.markdown(_metric_card("Annual Div", f"${div_rate:.2f}" if div_rate else "—"), unsafe_allow_html=True)
+        with dv3: st.markdown(_metric_card("Payout Ratio", _pct(payout), good=(payout or 1) < 0.80), unsafe_allow_html=True)
+        with dv4: st.markdown(_metric_card("5yr Avg Yield", _pct(avg5y / 100 if avg5y else None)), unsafe_allow_html=True)
 
 
 # ── Presets ───────────────────────────────────────────────────────────────────
@@ -875,6 +1116,37 @@ def main():
                 st.rerun()
 
         st.markdown('<div class="section-label" style="margin-top:8px">Scanner</div>', unsafe_allow_html=True)
+
+        with st.expander("Add tickers to universe", expanded=False):
+            custom_existing = get_custom_tickers(conn)
+            new_tickers_input = st.text_input(
+                "Tickers (comma-separated, .AX appended automatically)",
+                placeholder="e.g. PME, WTC, XRO",
+                key="custom_ticker_input",
+            )
+            if st.button("Add to scanner", use_container_width=True) and new_tickers_input.strip():
+                added, skipped = add_custom_tickers(conn, new_tickers_input)
+                if added:
+                    st.success(f"Added: {', '.join(added)}")
+                if skipped:
+                    st.caption(f"Already tracked: {', '.join(skipped)}")
+                st.rerun()
+            if custom_existing:
+                st.markdown(
+                    '<div style="font-size:0.72rem;color:#7a90b5;margin:6px 0 3px">Currently tracked:</div>',
+                    unsafe_allow_html=True,
+                )
+                for ct in custom_existing:
+                    col_t, col_x = st.columns([4, 1])
+                    col_t.markdown(
+                        f'<span style="font-family:monospace;font-size:0.78rem;color:#9fc0ff">{ct.replace(".AX","")}</span>',
+                        unsafe_allow_html=True,
+                    )
+                    if col_x.button("✕", key=f"rm_{ct}", help=f"Remove {ct}"):
+                        remove_custom_ticker(conn, ct)
+                        st.rerun()
+                st.caption("These tickers are included in every scan alongside the active universe.")
+
         trigger_scan = st.button("Run scanner now", use_container_width=True)
         if trigger_scan:
             conn.close()
@@ -953,8 +1225,8 @@ def main():
         "watchlist": selected_watchlist,
     }
 
-    tab_discover, tab_movers, tab_detail, tab_validation, tab_health = st.tabs([
-        "🔍 Discover", "📊 Movers", "🔎 Deep Dive", "🧪 Validation", "🩺 Data Health"
+    tab_discover, tab_movers, tab_detail, tab_compare, tab_validation, tab_health = st.tabs([
+        "🔍 Discover", "📊 Movers", "🔎 Deep Dive", "⚖️ Compare", "🧪 Validation", "🩺 Data Health"
     ])
 
     # ── DISCOVER ──────────────────────────────────────────────────────────────
@@ -1173,6 +1445,35 @@ def main():
                         unsafe_allow_html=True
                     )
 
+                # ── Financial snapshot (Simply Wall St style) ────────────────
+                raw_detail = json.loads(row.get("raw_info") or "{}")
+                if raw_detail:
+                    st.divider()
+                    render_financial_snapshot(raw_detail, row)
+
+                # ── Price history chart ──────────────────────────────────────
+                price_data = fetch_price_history_cached(selected_ticker)
+                if price_data:
+                    st.divider()
+                    st.markdown("#### Price history (1 year)")
+                    tgt = raw_detail.get("targetMeanPrice")
+                    tgt_low = raw_detail.get("targetLowPrice")
+                    tgt_high = raw_detail.get("targetHighPrice")
+                    fig_price = make_price_chart(
+                        price_data, tgt, tgt_low, tgt_high,
+                        selected_ticker.replace(".AX", ""),
+                    )
+                    if fig_price:
+                        st.plotly_chart(fig_price, use_container_width=True, key="detail_price_chart")
+                        if tgt:
+                            analyst_count = raw_detail.get("numberOfAnalystOpinions") or 0
+                            caption_parts = [f"Analyst consensus target: ${tgt:.2f}"]
+                            if tgt_low and tgt_high:
+                                caption_parts.append(f"range ${tgt_low:.2f}–${tgt_high:.2f}")
+                            if analyst_count:
+                                caption_parts.append(f"{analyst_count} analysts")
+                            st.caption(" · ".join(caption_parts))
+
                 st.divider()
 
                 for idx, (dim_key, label, desc, explanation) in enumerate([
@@ -1280,9 +1581,8 @@ def main():
 
                 exp = None
                 try:
-                    raw = json.loads(row.get("raw_info") or "{}")
                     from scorer import score_stock
-                    exp = score_stock(raw, selected_ticker).get("explanation")
+                    exp = score_stock(raw_detail, selected_ticker).get("explanation")
                 except Exception:
                     exp = None
 
@@ -1318,6 +1618,189 @@ def main():
                     st.caption("Narrative will be generated on next scan.")
 
             conn2.close()
+
+    # ── COMPARE ──────────────────────────────────────────────────────────────
+    with tab_compare:
+        st.markdown("### Compare two stocks side-by-side")
+
+        conn_cmp = get_db()
+        all_tickers_cmp = conn_cmp.execute(
+            "SELECT DISTINCT ticker, company_name FROM scores WHERE scan_date = ? ORDER BY ticker",
+            (today,)
+        ).fetchall()
+
+        if not all_tickers_cmp:
+            st.info("No stocks scored yet.")
+            conn_cmp.close()
+        else:
+            ticker_opts_cmp = {
+                f"{r['ticker'].replace('.AX','')} — {r['company_name']}": r['ticker']
+                for r in all_tickers_cmp
+            }
+            labels = list(ticker_opts_cmp.keys())
+
+            cmp_col_a, cmp_col_b = st.columns(2)
+            with cmp_col_a:
+                label_a = st.selectbox("Stock A", labels, index=0, key="cmp_a")
+            with cmp_col_b:
+                label_b = st.selectbox("Stock B", labels, index=min(1, len(labels)-1), key="cmp_b")
+
+            ticker_a = ticker_opts_cmp[label_a]
+            ticker_b = ticker_opts_cmp[label_b]
+
+            row_a = conn_cmp.execute(
+                "SELECT * FROM scores WHERE ticker = ? AND scan_date = ?", (ticker_a, today)
+            ).fetchone()
+            row_b = conn_cmp.execute(
+                "SELECT * FROM scores WHERE ticker = ? AND scan_date = ?", (ticker_b, today)
+            ).fetchone()
+
+            if row_a and row_b:
+                row_a = dict(row_a)
+                row_b = dict(row_b)
+                raw_a = json.loads(row_a.get("raw_info") or "{}")
+                raw_b = json.loads(row_b.get("raw_info") or "{}")
+
+                st.divider()
+
+                # ── Snowflakes + score overview side by side ──────────────────
+                col_a, col_b = st.columns(2)
+                for col, row_x, ticker_x, raw_x in [
+                    (col_a, row_a, ticker_a, raw_a),
+                    (col_b, row_b, ticker_b, raw_b),
+                ]:
+                    with col:
+                        score_x = row_x["total_score"]
+                        color_x = total_color(score_x)
+                        sf_svg = svg_snowflake([
+                            row_x.get('value_score', 0), row_x.get('future_score', 0),
+                            row_x.get('past_score', 0), row_x.get('health_score', 0),
+                            row_x.get('dividend_score', 0),
+                        ], size=180)
+                        st.markdown(
+                            f'<div style="text-align:center">'
+                            f'<div style="font-family:monospace;font-size:2rem;font-weight:800;color:{color_x}">'
+                            f'{score_x}<span style="font-size:0.9rem;color:#5e7291">/30</span></div>'
+                            f'<div style="font-size:0.75rem;color:#7a90b5;margin-bottom:4px">{score_band(score_x)}</div>'
+                            f'<div style="font-size:1.0rem;font-weight:700;color:#e8edf5">{ticker_x.replace(".AX","")}</div>'
+                            f'<div style="font-size:0.78rem;color:#7a90b5;margin-bottom:8px">{row_x["company_name"]}</div>'
+                            f'<div style="display:flex;justify-content:center">{sf_svg}</div>'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+
+                st.divider()
+
+                # ── Score dimension comparison table ──────────────────────────
+                st.markdown("#### Score breakdown")
+                dims_labels = [("Value", "value_score"), ("Future", "future_score"),
+                               ("Past", "past_score"), ("Health", "health_score"),
+                               ("Dividends", "dividend_score"), ("Total", "total_score")]
+                hdr = st.columns([2, 1, 1])
+                hdr[0].markdown("**Dimension**")
+                hdr[1].markdown(f"**{ticker_a.replace('.AX','')}**")
+                hdr[2].markdown(f"**{ticker_b.replace('.AX','')}**")
+                for label_d, key_d in dims_labels:
+                    max_d = 30 if key_d == "total_score" else 6
+                    va = row_a.get(key_d, 0) or 0
+                    vb = row_b.get(key_d, 0) or 0
+                    row_cols = st.columns([2, 1, 1])
+                    row_cols[0].markdown(label_d)
+                    color_va = "#00d68f" if va > vb else ("#ff4d6a" if va < vb else "#e8edf5")
+                    color_vb = "#00d68f" if vb > va else ("#ff4d6a" if vb < va else "#e8edf5")
+                    row_cols[1].markdown(
+                        f'<span style="color:{color_va};font-family:monospace;font-weight:700">'
+                        f'{va}/{max_d}</span>', unsafe_allow_html=True
+                    )
+                    row_cols[2].markdown(
+                        f'<span style="color:{color_vb};font-family:monospace;font-weight:700">'
+                        f'{vb}/{max_d}</span>', unsafe_allow_html=True
+                    )
+
+                st.divider()
+
+                # ── Key metrics comparison ────────────────────────────────────
+                st.markdown("#### Key metrics")
+
+                def _cmp_metric(label_m, val_a, val_b, fmt_fn, higher_is_better=True):
+                    row_m = st.columns([2, 1, 1])
+                    row_m[0].markdown(f'<span style="color:#7a90b5;font-size:0.83rem">{label_m}</span>', unsafe_allow_html=True)
+                    if val_a is not None and val_b is not None:
+                        better_a = (val_a > val_b) if higher_is_better else (val_a < val_b)
+                        ca = "#00d68f" if better_a else ("#ff4d6a" if val_a != val_b else "#e8edf5")
+                        cb = "#00d68f" if not better_a else ("#ff4d6a" if val_a != val_b else "#e8edf5")
+                    else:
+                        ca = cb = "#e8edf5"
+                    row_m[1].markdown(f'<span style="color:{ca};font-family:monospace">{fmt_fn(val_a)}</span>', unsafe_allow_html=True)
+                    row_m[2].markdown(f'<span style="color:{cb};font-family:monospace">{fmt_fn(val_b)}</span>', unsafe_allow_html=True)
+
+                _p = lambda v: f"{v*100:.1f}%" if v is not None else "—"
+                _r = lambda v: f"{v:.2f}x" if v is not None else "—"
+                _d = lambda v: f"${v:.2f}" if v is not None else "—"
+                _c = lambda v: _cap(v) if v is not None else "—"
+
+                _cmp_metric("Price", raw_a.get("currentPrice") or raw_a.get("regularMarketPrice"), raw_b.get("currentPrice") or raw_b.get("regularMarketPrice"), _d, higher_is_better=False)
+                _cmp_metric("Analyst Target", raw_a.get("targetMeanPrice"), raw_b.get("targetMeanPrice"), _d)
+                _cmp_metric("P/E (TTM)", raw_a.get("trailingPE"), raw_b.get("trailingPE"), _r, higher_is_better=False)
+                _cmp_metric("Fwd P/E", raw_a.get("forwardPE"), raw_b.get("forwardPE"), _r, higher_is_better=False)
+                _cmp_metric("EV/EBITDA", raw_a.get("enterpriseToEbitda"), raw_b.get("enterpriseToEbitda"), _r, higher_is_better=False)
+                _cmp_metric("Price/Book", raw_a.get("priceToBook"), raw_b.get("priceToBook"), _r, higher_is_better=False)
+                _cmp_metric("Gross Margin", raw_a.get("grossMargins"), raw_b.get("grossMargins"), _p)
+                _cmp_metric("Op Margin", raw_a.get("operatingMargins"), raw_b.get("operatingMargins"), _p)
+                _cmp_metric("Net Margin", raw_a.get("profitMargins"), raw_b.get("profitMargins"), _p)
+                _cmp_metric("ROE", raw_a.get("returnOnEquity"), raw_b.get("returnOnEquity"), _p)
+                _cmp_metric("Revenue Growth", raw_a.get("revenueGrowth"), raw_b.get("revenueGrowth"), _p)
+                _cmp_metric("Earnings Growth", raw_a.get("earningsGrowth"), raw_b.get("earningsGrowth"), _p)
+                _cmp_metric("Dividend Yield", raw_a.get("dividendYield"), raw_b.get("dividendYield"), _p)
+                _cmp_metric("Current Ratio", raw_a.get("currentRatio"), raw_b.get("currentRatio"), _r)
+                de_a = (raw_a.get("debtToEquity") or 0) / 100 if raw_a.get("debtToEquity") else None
+                de_b = (raw_b.get("debtToEquity") or 0) / 100 if raw_b.get("debtToEquity") else None
+                _cmp_metric("Debt/Equity", de_a, de_b, _r, higher_is_better=False)
+                _cmp_metric("Free Cash Flow", raw_a.get("freeCashflow"), raw_b.get("freeCashflow"), _c)
+                _cmp_metric("Market Cap", raw_a.get("marketCap"), raw_b.get("marketCap"), _c)
+
+                st.divider()
+
+                # ── Price histories on one chart ──────────────────────────────
+                st.markdown("#### Price history (1 year)")
+                pd_a = fetch_price_history_cached(ticker_a)
+                pd_b = fetch_price_history_cached(ticker_b)
+                if pd_a or pd_b:
+                    fig_cmp = go.Figure()
+                    if pd_a and pd_a.get("closes"):
+                        # Normalise to 100 for fair comparison
+                        closes_a = pd_a["closes"]
+                        base_a = closes_a[0] or 1
+                        norm_a = [c / base_a * 100 if c else None for c in closes_a]
+                        fig_cmp.add_trace(go.Scatter(
+                            x=pd_a["dates"], y=norm_a,
+                            name=ticker_a.replace(".AX", ""),
+                            line=dict(color="#3b7dff", width=2),
+                        ))
+                    if pd_b and pd_b.get("closes"):
+                        closes_b = pd_b["closes"]
+                        base_b = closes_b[0] or 1
+                        norm_b = [c / base_b * 100 if c else None for c in closes_b]
+                        fig_cmp.add_trace(go.Scatter(
+                            x=pd_b["dates"], y=norm_b,
+                            name=ticker_b.replace(".AX", ""),
+                            line=dict(color="#00d68f", width=2),
+                        ))
+                    fig_cmp.add_hline(y=100, line_dash="dot", line_color="#4a5d7a", line_width=1)
+                    fig_cmp.update_layout(
+                        template="plotly_dark", height=300,
+                        paper_bgcolor="#0c1324", plot_bgcolor="#0c1324",
+                        margin=dict(l=0, r=10, t=10, b=10),
+                        xaxis=dict(gridcolor="#1a2540"),
+                        yaxis=dict(gridcolor="#1a2540", ticksuffix="%"),
+                        legend=dict(orientation="h", y=1.08),
+                    )
+                    st.plotly_chart(fig_cmp, use_container_width=True, key="cmp_price_chart")
+                    st.caption("Normalised to 100 at start of 1-year period for a like-for-like comparison.")
+                else:
+                    st.caption("Live price history unavailable — yfinance may not be installed.")
+
+            conn_cmp.close()
 
     # ── VALIDATION ───────────────────────────────────────────────────────────
     with tab_validation:

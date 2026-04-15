@@ -206,6 +206,21 @@ def run_scan(universe_name: Optional[str] = None):
     from scorer import score_stock
 
     display_name, tickers = get_universe(universe_name)
+    tickers = list(tickers)
+
+    # Merge any custom tickers added via the dashboard UI
+    try:
+        _cc = sqlite3.connect(DB_PATH)
+        _cc.row_factory = sqlite3.Row
+        custom_rows = _cc.execute("SELECT ticker FROM custom_tickers").fetchall()
+        _cc.close()
+        extra = [r["ticker"] for r in custom_rows if r["ticker"] not in set(tickers)]
+        if extra:
+            log.info(f"Adding {len(extra)} custom tickers to scan: {extra}")
+            tickers.extend(extra)
+    except Exception as _e:
+        log.warning(f"Could not load custom tickers: {_e}")
+
     run_logger = ScanRunLogger(universe=display_name, log_dir=DB_PATH.parent)
     run_id = run_logger.run_id
 
