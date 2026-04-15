@@ -6,18 +6,18 @@ WORKDIR /app
 COPY app/requirements.txt .
 RUN pip install --no-cache-dir --prefer-binary -r requirements.txt
 
-# yfinance pulls in curl_cffi which requires compilation when no pre-built
-# wheel exists for the host architecture.  Install it as a best-effort step
-# so the image always builds — yfinance_provider.py disables itself gracefully
-# via ImportError if the package is absent.
+# yahooquery and yfinance both pull in packages that may require compilation
+# when no pre-built wheel exists for the host architecture.  Install them as
+# best-effort steps so the image always builds — each provider disables itself
+# gracefully via ImportError if the package is absent.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        gcc g++ make libffi-dev libssl-dev \
-    && pip install --no-cache-dir --prefer-binary "yfinance>=0.2.43" \
-    && apt-get purge -y --auto-remove gcc g++ make libffi-dev libssl-dev \
+        gcc g++ make libffi-dev libssl-dev libxml2-dev libxslt1-dev \
+    && pip install --no-cache-dir --prefer-binary "yahooquery==2.3.7" "yfinance>=0.2.43" \
+    && apt-get purge -y --auto-remove gcc g++ make libffi-dev libssl-dev libxml2-dev libxslt1-dev \
     && rm -rf /var/lib/apt/lists/* \
-    || (apt-get purge -y --auto-remove gcc g++ make libffi-dev libssl-dev 2>/dev/null; \
+    || (apt-get purge -y --auto-remove gcc g++ make libffi-dev libssl-dev libxml2-dev libxslt1-dev 2>/dev/null; \
         rm -rf /var/lib/apt/lists/*; \
-        echo "WARNING: yfinance install failed — provider will be disabled")
+        echo "WARNING: yahooquery/yfinance install failed — providers will be disabled")
 
 # Copy application code
 COPY app/ .
