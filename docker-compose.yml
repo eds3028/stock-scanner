@@ -1,11 +1,3 @@
-# Shared environment fragments
-x-common-env: &common-env
-  TZ: ${TZ:-Australia/Perth}
-  FINNHUB_API_KEY: ${FINNHUB_API_KEY:-}
-  FMP_API_KEY: ${FMP_API_KEY:-}
-  ALPHA_VANTAGE_API_KEY: ${ALPHA_VANTAGE_API_KEY:-}
-  UNIVERSE: ${UNIVERSE:-asx200}
-
 services:
   # ── Scanner ──────────────────────────────────────────────────────────────────
   # Runs the nightly scheduler (and an immediate scan on first boot if DB is
@@ -20,7 +12,11 @@ services:
     volumes:
       - /opt/stacks/stocks/data:/data
     environment:
-      <<: *common-env
+      TZ: ${TZ:-Australia/Perth}
+      FINNHUB_API_KEY: ${FINNHUB_API_KEY:-}
+      FMP_API_KEY: ${FMP_API_KEY:-}
+      ALPHA_VANTAGE_API_KEY: ${ALPHA_VANTAGE_API_KEY:-}
+      UNIVERSE: ${UNIVERSE:-asx200}
       OLLAMA_HOST: ${OLLAMA_HOST:-}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.1:8b}
 
@@ -44,7 +40,11 @@ services:
     volumes:
       - /opt/stacks/stocks/data:/data
     environment:
-      <<: *common-env
+      TZ: ${TZ:-Australia/Perth}
+      FINNHUB_API_KEY: ${FINNHUB_API_KEY:-}
+      FMP_API_KEY: ${FMP_API_KEY:-}
+      ALPHA_VANTAGE_API_KEY: ${ALPHA_VANTAGE_API_KEY:-}
+      UNIVERSE: ${UNIVERSE:-asx200}
     depends_on:
       - scanner
     healthcheck:
