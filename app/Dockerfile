@@ -4,6 +4,10 @@ WORKDIR /app
 
 COPY app/requirements.txt .
 
+# Upgrade pip/setuptools first so the bundled version in the base image
+# cannot cause resolution or metadata-parsing failures.
+RUN pip install --upgrade pip setuptools wheel
+
 # All packages in requirements.txt ship pre-built binary wheels for x86_64
 # (and ARM64), so no compiler or system build tools are needed.
 # yahooquery and yfinance are best-effort: each provider disables itself
