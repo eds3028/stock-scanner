@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import math
 import time
-from dataclasses import dataclass
 
 
 SCORING_MODEL_VERSION = "v1"

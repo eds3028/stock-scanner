@@ -6,7 +6,6 @@ when the application is running in a degraded configuration.
 
 import logging
 import os
-import sys
 
 log = logging.getLogger(__name__)
 
