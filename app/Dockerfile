@@ -2,18 +2,22 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Build tools required by yfinance's curl_cffi dependency when no pre-built
-# wheel exists for the host architecture (e.g. ARM).  Removed after install
-# to keep the image lean.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    libffi-dev \
-    libssl-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install deps first (cache-friendly layer)
+# Install core dependencies (always succeeds on any architecture)
 COPY app/requirements.txt .
 RUN pip install --no-cache-dir --prefer-binary -r requirements.txt
+
+# yfinance pulls in curl_cffi which requires compilation when no pre-built
+# wheel exists for the host architecture.  Install it as a best-effort step
+# so the image always builds — yfinance_provider.py disables itself gracefully
+# via ImportError if the package is absent.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gcc g++ make libffi-dev libssl-dev \
+    && pip install --no-cache-dir --prefer-binary "yfinance>=0.2.43" \
+    && apt-get purge -y --auto-remove gcc g++ make libffi-dev libssl-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    || (apt-get purge -y --auto-remove gcc g++ make libffi-dev libssl-dev 2>/dev/null; \
+        rm -rf /var/lib/apt/lists/*; \
+        echo "WARNING: yfinance install failed — provider will be disabled")
 
 # Copy application code
 COPY app/ .
